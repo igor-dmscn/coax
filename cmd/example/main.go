@@ -54,10 +54,19 @@ func main() {
 		Authenticate: authenticate,
 	})
 
-	srv.Register("ChatChannel", func(s *coax.Subscription) coax.Channel {
+	// Actions registered by name rather than switched on, so a channel is its
+	// lifecycle plus one method per action. cmd/dmexample shows the other shape,
+	// a single Perform with a switch, which is simpler when there are two or three
+	// actions and one place to handle their errors.
+	coax.Handle(srv, "ChatChannel", func(s *coax.Subscription) *chatChannel {
 		return &chatChannel{server: srv, sub: s}
-	})
-	srv.Register("ClockChannel", func(s *coax.Subscription) coax.Channel {
+	}).
+		On("speak", (*chatChannel).speak).
+		On("typing", (*chatChannel).typing)
+
+	// No actions: a channel that only ever pushes needs no handlers, and no
+	// Perform either.
+	coax.Handle(srv, "ClockChannel", func(s *coax.Subscription) *clockChannel {
 		return &clockChannel{sub: s}
 	})
 
@@ -154,36 +163,33 @@ func (c *chatChannel) Subscribed(ctx context.Context) error {
 
 func (c *chatChannel) Unsubscribed(context.Context) {}
 
-func (c *chatChannel) Perform(ctx context.Context, action string, data json.RawMessage) error {
-	switch action {
-	case "speak":
-		var payload struct {
-			Body string `json:"body"`
-		}
-		if err := json.Unmarshal(data, &payload); err != nil {
-			return err
-		}
-		return c.server.Broadcast(ctx, c.room, map[string]string{
-			"kind": "message",
-			"from": c.me(),
-			"body": payload.Body,
-		})
-
-	case "typing":
-		// Broadcast and forgotten. Nothing is stored, and nobody who joins in a
-		// second's time needs to know: a typing indicator is only true for about
-		// as long as it takes to arrive.
-		//
-		// It goes to the whole room, the sender included, because a broadcast has
-		// no way to exclude anyone — the client ignores its own.
-		return c.server.Broadcast(ctx, c.room, map[string]string{
-			"kind": "typing",
-			"from": c.me(),
-		})
-
-	default:
-		return fmt.Errorf("unknown action %q", action)
+// speak is registered as the "speak" action. An unknown action never reaches here:
+// the framework reports it, naming what is registered.
+func (c *chatChannel) speak(ctx context.Context, data json.RawMessage) error {
+	var payload struct {
+		Body string `json:"body"`
 	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	return c.server.Broadcast(ctx, c.room, map[string]string{
+		"kind": "message",
+		"from": c.me(),
+		"body": payload.Body,
+	})
+}
+
+// typing is broadcast and forgotten. Nothing is stored, and nobody who joins in a
+// second's time needs to know: a typing indicator is only true for about as long as
+// it takes to arrive.
+//
+// It goes to the whole room, the sender included, because a broadcast has no way to
+// exclude anyone — the client ignores its own.
+func (c *chatChannel) typing(ctx context.Context, _ json.RawMessage) error {
+	return c.server.Broadcast(ctx, c.room, map[string]string{
+		"kind": "typing",
+		"from": c.me(),
+	})
 }
 
 func (c *chatChannel) me() string {
@@ -200,10 +206,6 @@ func (c *clockChannel) Subscribed(context.Context) error {
 }
 
 func (c *clockChannel) Unsubscribed(context.Context) {}
-
-func (c *clockChannel) Perform(context.Context, string, json.RawMessage) error {
-	return errors.New("the clock takes no actions")
-}
 
 func index(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {

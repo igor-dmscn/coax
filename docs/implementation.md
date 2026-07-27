@@ -27,6 +27,7 @@ your application
 │  │  ├─ map[string]*Subscription           keyed by the client's raw identifier
 │  │  │  └─ Subscription
 │  │  │     ├─ Channel (your code)          Subscribed / Unsubscribed / Perform
+│  │  │     │                              or Subscribed / Unsubscribed + named actions
 │  │  │     ├─ streams map[string]func()    broadcasting → unsubscribe
 │  │  │     └─ stopTimers []func()          periodic timers
 │  │  └─ internal channel subscription      action_cable/<identity>
@@ -330,6 +331,41 @@ Three details that are easy to get wrong and are therefore pinned by tests:
   double-encoded. `json.RawMessage` passes a payload through without re-encoding it, which is
   also what makes Rails interop byte-exact.
 
+### 5a. Two ways to dispatch an action
+
+A channel may switch on the action itself, or register a handler per action:
+
+```go
+// one Perform, one switch — everything in one place, one place to handle errors
+func (c *ChatChannel) Perform(ctx context.Context, action string, data json.RawMessage) error {
+	switch action { case "speak": …; case "typing": … }
+}
+
+// or named handlers, and no Perform at all
+coax.Handle(srv, "ChatChannel", newChatChannel).
+	On("speak", (*ChatChannel).Speak).
+	On("typing", (*ChatChannel).Typing)
+```
+
+`Handle` installs a factory that wraps the channel in an unexported `routed`, which
+holds the action map and implements `Perform` as a lookup. So the registry, the
+`Channel` interface, `Subscription` and the dispatch path are all untouched by the
+feature — the action map lives in a closure the factory captured while it was still
+empty, and `On` fills it in afterwards. `Register` and a switch keep working exactly
+as before, which is what `cmd/dmexample` still demonstrates.
+
+Precedence in `routed.Perform`: a registered handler, else the channel's own
+`Perform` (the `Performer` interface) as a catch-all, else `ErrUnknownAction` naming
+what *is* registered. That last case is the reason to prefer `On` — a typo reads
+differently in the log from a handler that failed, which a switch cannot express
+because the framework never learns the action list.
+
+Two costs, both real: `On` mutates a map that connection goroutines later read
+without a lock, so it is start-up-only by documentation rather than by
+construction; and the channel type is constrained `comparable` so a factory
+returning nothing is still caught, which excludes a channel that is a struct value
+holding a map or a slice.
+
 ---
 
 ## 6. The pub/sub layer
@@ -510,7 +546,8 @@ identifiers.
 | Connection arrives during shutdown | `503 Server shutting down`, or `server_restart` if it got past the gate |
 | Unknown channel, duplicate subscribe, unknown subscription, unsubscribe | logged, **nothing sent** — Rails answers an unintelligible command with silence |
 | `Subscribed` returns an error | `reject_subscription`; streams and timers it started are stopped |
-| `Perform` returns an error | logged, client told nothing |
+| `Perform` or an action handler returns an error | logged, client told nothing |
+| Action with no handler and no `Perform` | logged at warn with the registered names (`ErrUnknownAction`), client told nothing |
 | Periodic callback returns an error | logged, the timer keeps running |
 | Send queue full | connection dropped, warn logged |
 | Frame write fails or times out (10s) | connection dropped |
@@ -535,7 +572,7 @@ Deliberate, each with the reason. Nothing here is an accident.
 | Internal channel name | sorted GlobalIDs | sorted `key=value` pairs | our identifiers are arbitrary strings; without keys `{"user":"42"}` and `{"room":"42"}` would disconnect each other |
 | Remote disconnect interop | — | does not cross to Rails | follows from the line above. Broadcasts, which is what interop means, do |
 | Failed upgrade | 404 | 404, but 400 for a malformed key | `ws` is a standalone library and answers on its own terms |
-| Action dispatch | reflection on public methods | one `Perform` with a switch | no reflection, and an unknown action is an error the channel returns |
+| Action dispatch | reflection on public methods | a switch in `Perform`, or handlers registered by name with `Handle`/`On` | no reflection either way; `On` takes method expressions, so a renamed method is a compile error rather than an action that never fires |
 | `stream_for(model)` | GlobalID naming | absent | no GlobalID in Go; inventing a convention would be worse than composing a name |
 | Logging | `TaggedLoggerProxy` | `slog` with `remote` attached | structured logging is the platform's answer |
 

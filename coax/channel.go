@@ -3,6 +3,7 @@ package coax
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -213,6 +214,13 @@ func (c *Connection) performAction(cmd clientCommand) {
 	}
 
 	if err := sub.impl.Perform(c.ctx, action, data); err != nil {
+		// An action nothing handles is a different problem from an action that
+		// failed — usually a typo on one side or the other — so it reads
+		// differently in the log.
+		if errors.Is(err, ErrUnknownAction) {
+			c.logger.Warn("coax: unknown action", "channel", sub.channel, "error", err)
+			return
+		}
 		c.logger.Error("coax: action failed", "channel", sub.channel, "action", action, "error", err)
 	}
 }

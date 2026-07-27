@@ -154,6 +154,9 @@ c.subscriptions[cmd.Identifier] → missing? → log, return   (silent to the cl
 decodeAction(cmd.Data)          → action, payload
   no "action" key or empty      → "receive"
 sub.impl.Perform(c.ctx, action, payload)
+  registered handler?           → run it                    (Handle/On)
+  else the channel's Perform?   → run it                    (Register, or a catch-all)
+  else                          → ErrUnknownAction → log at warn, naming what is registered
   error                         → log, client told nothing
 ```
 

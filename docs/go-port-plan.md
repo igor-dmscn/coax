@@ -280,6 +280,11 @@ srv.RemoteConnections(Identifiers{"current_user": "1"}).Disconnect(ctx, false)
 allocation, boring at 3am. `action == ""` dispatches to `receive`, per protocol.
 `// ponytail: switch dispatch; swap for map[string]func or reflection only past ~10 actions`
 
+**Since built, additively:** `coax.Handle(srv, name, factory).On("speak", (*T).Speak)` registers
+handlers by name, using method expressions so they are checked at compile time — still no
+reflection. The switch keeps working untouched; see implementation.md §5a for why nothing in the
+registry or the dispatch path had to change, and for the two costs.
+
 **Rejection is the error return, not a second mechanism** (built, Phase 3). The sketch had both
 `Subscribed() error` and `s.Reject()`; two ways to say no is a smell, and Rails only has the one
 because Ruby's `subscribed` cannot return a value. A non-nil error from `Subscribed` sends
