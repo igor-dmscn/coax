@@ -180,6 +180,43 @@ func TestCloseHandshake(t *testing.T) {
 	}
 }
 
+// TestCloseSend covers the close a server with a dedicated reader goroutine can
+// actually perform: the peer still learns the status, which is the whole
+// difference from CloseNow.
+func TestCloseSend(t *testing.T) {
+	serverErr := make(chan error, 1)
+	conn := dialTestServer(t, echoHandler(t, nil, serverErr), nil)
+
+	if err := conn.CloseSend(StatusGoingAway, "restarting"); err != nil {
+		t.Fatalf("CloseSend() error = %v", err)
+	}
+
+	select {
+	case err := <-serverErr:
+		if got := CloseStatus(err); got != StatusGoingAway {
+			t.Errorf("peer CloseStatus = %v, want %v", got, StatusGoingAway)
+		}
+		var ce CloseError
+		if errors.As(err, &ce) && ce.Reason != "restarting" {
+			t.Errorf("peer reason = %q, want %q", ce.Reason, "restarting")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the peer did not report the close")
+	}
+
+	// Repeated calls, and a later CloseNow, report the first cause rather than
+	// closing twice: teardown paths overlap.
+	if got := CloseStatus(conn.CloseSend(StatusNormalClosure, "")); got != StatusGoingAway {
+		t.Errorf("second CloseSend() = %v, want the first cause", got)
+	}
+	if got := CloseStatus(conn.CloseNow()); got != StatusGoingAway {
+		t.Errorf("CloseNow() after CloseSend() = %v, want the first cause", got)
+	}
+	if _, _, err := conn.Read(context.Background()); err == nil {
+		t.Error("Read() after CloseSend() = nil error, want the close error")
+	}
+}
+
 func TestCloseReasonTooLong(t *testing.T) {
 	conn := dialTestServer(t, echoHandler(t, nil, nil), nil)
 

@@ -261,36 +261,69 @@ func (c *Conn) Writer(ctx context.Context, typ MessageType) (io.WriteCloser, err
 // Close sends a close frame with the given status and reason, waits briefly for
 // the peer to answer, and closes the underlying connection.
 //
+// The wait reads from the connection, so Close must not be called while another
+// goroutine is reading: use CloseSend there instead.
+//
 // It is safe to call Close more than once; later calls return the error from
 // the first. reason must not exceed 123 bytes.
 func (c *Conn) Close(code StatusCode, reason string) error {
 	return c.closeHandshake(code, reason, CloseError{Code: code, Reason: reason})
 }
 
-// CloseNow closes the underlying connection without a close handshake. Use it
-// to abandon a connection or to unblock a reader or writer.
+// CloseSend sends a close frame and then closes the underlying connection,
+// without waiting for the peer to answer.
+//
+// It exists for the common server shape where one goroutine owns reads: Close
+// completes the handshake, which means reading, so calling it from anywhere else
+// would race that reader. This tells the peer why the connection is ending —
+// which CloseNow does not — and gives up the right to hear its answer.
+//
+// It is safe to call more than once; later calls return the error from the first.
+// reason must not exceed 123 bytes.
+func (c *Conn) CloseSend(code StatusCode, reason string) error {
+	if err := c.startClosing(CloseError{Code: code, Reason: reason}); err != nil {
+		return err
+	}
+
+	writeErr := c.writeClose(code, reason)
+	closeErr := c.rwc.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
+}
+
+// CloseNow closes the underlying connection without a close handshake and
+// without telling the peer anything. Use it to abandon a connection, or to
+// unblock a reader or writer.
 func (c *Conn) CloseNow() error {
+	if err := c.startClosing(CloseError{Code: StatusAbnormalClosure}); err != nil {
+		return err
+	}
+	return c.rwc.Close()
+}
+
+// startClosing records why the connection is ending, or reports the reason
+// already recorded, which is what makes the Close methods callable repeatedly and
+// from more than one goroutine.
+func (c *Conn) startClosing(cause error) error {
 	c.closeMu.Lock()
 	defer c.closeMu.Unlock()
+
 	if c.closeErr != nil {
 		return c.closeErr
 	}
-	c.closeErr = CloseError{Code: StatusAbnormalClosure}
-	return c.rwc.Close()
+	c.closeErr = cause
+	return nil
 }
 
 // closeHandshake writes a close frame, drains until the peer's close arrives or
 // the grace period expires, then closes the socket. cause becomes the terminal
 // error reported by later calls.
 func (c *Conn) closeHandshake(code StatusCode, reason string, cause error) error {
-	c.closeMu.Lock()
-	if c.closeErr != nil {
-		err := c.closeErr
-		c.closeMu.Unlock()
+	if err := c.startClosing(cause); err != nil {
 		return err
 	}
-	c.closeErr = cause
-	c.closeMu.Unlock()
 
 	writeErr := c.writeClose(code, reason)
 
