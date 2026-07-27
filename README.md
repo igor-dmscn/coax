@@ -94,6 +94,18 @@ func (c *ChatChannel) Perform(ctx context.Context, action string, data json.RawM
 }
 ```
 
+If you would rather not switch on the action, register handlers by name instead — the channel
+then needs no `Perform`, and a renamed method is a compile error rather than an action that
+silently never fires:
+
+```go
+coax.Handle(srv, "ChatChannel", newChatChannel).
+    On("speak",  (*ChatChannel).Speak).
+    On("typing", (*ChatChannel).Typing)
+```
+
+Both work, and both examples in `cmd/` use one each.
+
 From anywhere else — an HTTP handler, a background job — reach those clients with the same call:
 
 ```go
@@ -163,6 +175,7 @@ sub.Periodically(time.Second, tick)          // push without being asked
 sub.Params() / sub.Identifier() / sub.ChannelName() / sub.Connection()
 
 srv.Broadcast(ctx, "chat:1", v)
+coax.Handle(srv, "ChatChannel", newChat).On("speak", (*ChatChannel).Speak)   // instead of a switch
 srv.Disconnect(ctx, coax.Identifiers{"user": "42"}, false)   // in every process
 srv.Shutdown(ctx)                            // tell clients to reconnect, then drain
 srv.ConnectionCount()
