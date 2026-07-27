@@ -1,0 +1,6 @@
+# Test binaries and coverage output
+*.test
+*.out
+
+# Fuzzing corpora found by the fuzzer; the seed corpus lives in testdata/
+testdata/fuzz/
