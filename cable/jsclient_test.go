@@ -31,8 +31,10 @@ const { createConsumer, logger } = await import("@rails/actioncable")
 
 logger.enabled = true
 
+// The query parameter becomes the connection's identifier, so the two clients
+// below are two different identities as far as the server is concerned.
 const url = process.argv[2]
-const consumer = createConsumer(url)
+const consumer = createConsumer(url + "?client=first")
 consumer.connect()
 
 const fail = (message) => { console.error("FAIL: " + message); process.exit(1) }
@@ -107,7 +109,7 @@ await waitUntil("RejectedChannel to be rejected", () => rejected)
 // A second client in the same room: a broadcast reaches both, which is the
 // difference between transmitting to one subscription and publishing to a
 // broadcasting.
-const otherConsumer = createConsumer(url)
+const otherConsumer = createConsumer(url + "?client=second")
 otherConsumer.connect()
 
 const otherReceived = []
@@ -144,6 +146,20 @@ if (!(sincePing < 6)) fail("last message was " + sincePing + "s ago")
 chat.perform("speak", { body: "still here" })
 await waitUntil("a reply after the heartbeats", () => received.length > 3)
 if (received[3].body !== "still here") fail("body was " + received[3].body)
+
+// A remote disconnect with reconnect=false: the client stays down. This is what
+// the flag is for, so it is checked against the client's real reconnect logic
+// rather than only against the frame on the wire.
+otherConsumer.subscriptions.create({ channel: "DisconnectChannel" }, {})
+
+await waitUntil("the second client to be disconnected", () => !otherConsumer.connection.isOpen())
+if (otherConsumer.connection.monitor.isRunning()) {
+  fail("the monitor is still running after reconnect=false")
+}
+
+// The first client is a different identity, so it is untouched.
+await sleep(500)
+if (!consumer.connection.isOpen()) fail("the wrong client was disconnected")
 
 otherConsumer.disconnect()
 consumer.disconnect()
@@ -255,6 +271,22 @@ func (c roomChannel) room() (string, error) {
 	return params.Room, nil
 }
 
+// disconnectChannel disconnects its own connection the remote way: by publishing
+// to the pub/sub backend, exactly as another process would. Subscribing to it is
+// how the JS client asks to be thrown out.
+type disconnectChannel struct {
+	srv *Server
+	sub *Subscription
+}
+
+func (c disconnectChannel) Subscribed(ctx context.Context) error {
+	return c.srv.Disconnect(ctx, c.sub.Connection().Identifiers(), false)
+}
+
+func (disconnectChannel) Unsubscribed(context.Context) {}
+
+func (disconnectChannel) Perform(context.Context, string, json.RawMessage) error { return nil }
+
 // rejectedChannel refuses every subscription.
 type rejectedChannel struct{}
 
@@ -275,11 +307,21 @@ func startCableServer(t *testing.T) string {
 		t.Fatalf("listening: %v", err)
 	}
 
-	srv := New(&Options{Logger: testLogger(t)})
+	srv := New(&Options{
+		Logger: testLogger(t),
+		Authenticate: func(r *http.Request) (Identifiers, error) {
+			// Whatever the client says it is: enough to give the two clients
+			// distinct identities, which is what remote disconnect addresses.
+			return Identifiers{"client": r.URL.Query().Get("client")}, nil
+		},
+	})
 	t.Cleanup(func() { srv.Close() })
 
 	srv.Register("ChatChannel", func(s *Subscription) Channel { return roomChannel{srv: srv, sub: s} })
 	srv.Register("RejectedChannel", func(*Subscription) Channel { return rejectedChannel{} })
+	srv.Register("DisconnectChannel", func(s *Subscription) Channel {
+		return disconnectChannel{srv: srv, sub: s}
+	})
 
 	mux := http.NewServeMux()
 	mux.Handle(DefaultMountPath, srv)

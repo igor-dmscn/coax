@@ -1,6 +1,7 @@
 package cable
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -34,9 +35,15 @@ type Server struct {
 	conns    map[*Connection]struct{}
 	channels map[string]ChannelFactory
 
+	// live counts the connections being served, so shutdown can wait for them.
+	live sync.WaitGroup
+
 	heartbeatOnce sync.Once
 	stopOnce      sync.Once
-	stop          chan struct{}
+
+	// stop is closed once the server is going away. It stops the heartbeat and
+	// makes the server refuse new connections.
+	stop chan struct{}
 }
 
 // New returns a Server. opts may be nil.
@@ -75,6 +82,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A server that is going away must not take on more work, or a shutdown can
+	// never finish. Answered with a status rather than a WebSocket, since there is
+	// no point completing a handshake only to end it.
+	if s.stopping() {
+		s.opts.Logger.Debug("cable: refusing a connection during shutdown", "remote", r.RemoteAddr)
+		writeUnavailable(w)
+		return
+	}
+
 	conn, err := ws.Accept(w, r, &ws.AcceptOptions{
 		Subprotocols: []string{Subprotocol, subprotocolUnsupported},
 		// Origin was already checked above with Action Cable's rules.
@@ -109,30 +125,123 @@ func (s *Server) serve(r *http.Request, sock *ws.Conn) {
 	// The writer goroutine owns the socket's write side from here on.
 	go c.writeLoop()
 
+	// Before the welcome, so that a remote disconnect published the moment a
+	// client believes it is connected cannot be missed.
+	c.subscribeToInternalChannel()
+
 	if !c.transmitMessage(newWelcome()) {
 		return
 	}
 
 	// Registration follows the welcome, so a connection is never sent a
 	// heartbeat before it has been told it is usable.
-	s.add(c)
+	if !s.add(c) {
+		// Shutdown began while this connection was being set up. It is told the
+		// same thing every other connection was told, and waited for, since
+		// returning here would close the socket under the message.
+		c.close(reasonServerRestart, true)
+		c.waitForClose()
+		return
+	}
 	defer s.remove(c)
 	s.startHeartbeat()
 
 	c.readLoop()
 }
 
-// Close stops the heartbeat and drops every connection. It is safe to call more
-// than once. A PubSub supplied through Options is left open, since the server did
-// not open it.
+// Close drops every connection without explanation and stops the server. Clients
+// see a broken socket and reconnect on their own schedule. It is safe to call more
+// than once, and after Shutdown.
 //
-// This is the abrupt form. Graceful shutdown, which tells clients to reconnect
-// before going away, arrives with the rest of the disconnect handling.
+// Prefer Shutdown, which tells clients what happened. Close is for when there is
+// no time left, and for tests.
+//
+// A PubSub supplied through Options is left open, since the server did not open it.
 func (s *Server) Close() error {
-	s.stopOnce.Do(func() { close(s.stop) })
+	s.beginShutdown()
 	for _, c := range s.snapshot(nil) {
 		c.closeNow()
 	}
+	return s.closePubSub()
+}
+
+// Shutdown ends the server gracefully: every connection is told the server is
+// restarting and that it should come back, then closed once that message has been
+// delivered. New connections are refused from the moment it is called.
+//
+// It waits for connections to finish, bounded by ctx. On expiry the remaining ones
+// are dropped abruptly and ctx's error is returned, so a client that has stopped
+// reading cannot hold a deployment open.
+//
+// Clients reconnect, which means this is what a rolling deploy wants: a connection
+// moved to another process rather than a client left wondering.
+//
+// ← actioncable/lib/action_cable/server/base.rb:44 (restart)
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.beginShutdown()
+
+	for _, c := range s.snapshot(nil) {
+		c.close(reasonServerRestart, true)
+	}
+
+	err := s.waitForConnections(ctx)
+	if err != nil {
+		s.opts.Logger.Warn("cable: shutdown ran out of time, dropping connections",
+			"remaining", s.ConnectionCount(), "error", err)
+		for _, c := range s.snapshot(nil) {
+			c.closeNow()
+		}
+	}
+
+	if closeErr := s.closePubSub(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+// beginShutdown makes the server refuse new connections and stops the heartbeat.
+// The lock is held so that a connection which has just been accepted is either
+// registered before shutdown starts waiting, or refused.
+func (s *Server) beginShutdown() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopOnce.Do(func() { close(s.stop) })
+}
+
+func (s *Server) stopping() bool {
+	select {
+	case <-s.stop:
+		return true
+	default:
+		return false
+	}
+}
+
+// waitForConnections waits until every connection has stopped being served. A
+// connection may still be releasing its subscriptions when this returns, which is
+// harmless: a backend ignores an unsubscribe after it has been closed.
+func (s *Server) waitForConnections(ctx context.Context) error {
+	// Checked first so that shutting down an idle server with an expired context
+	// succeeds rather than depending on which case the select picks.
+	if s.ConnectionCount() == 0 {
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		s.live.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Server) closePubSub() error {
 	if s.ownsPubSub {
 		return s.opts.PubSub.Close()
 	}
@@ -146,16 +255,27 @@ func (s *Server) ConnectionCount() int {
 	return len(s.conns)
 }
 
-func (s *Server) add(c *Connection) {
+// add registers a connection, reporting false if the server is going away. It
+// takes the same lock beginShutdown does, which is what makes the answer binding:
+// a connection either counts towards the shutdown wait or is turned away.
+func (s *Server) add(c *Connection) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.stopping() {
+		return false
+	}
 	s.conns[c] = struct{}{}
-	s.mu.Unlock()
+	s.live.Add(1)
+	return true
 }
 
 func (s *Server) remove(c *Connection) {
 	s.mu.Lock()
 	delete(s.conns, c)
 	s.mu.Unlock()
+
+	s.live.Done()
 }
 
 // snapshot copies the connection set into dst so callers can iterate without
@@ -260,6 +380,16 @@ func writePageNotFound(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
 	io.WriteString(w, "Page not found")
+}
+
+// writeUnavailable answers a connection attempt made while the server is going
+// away. Unlike the 404, this one is not copied from Rails: a Rails server being
+// restarted stops listening altogether, while this is an http.Handler that may
+// well be mounted in a process still serving other routes.
+func writeUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	io.WriteString(w, "Server shutting down")
 }
 
 // rejectUnauthorized tells a client its connection was refused and closes.

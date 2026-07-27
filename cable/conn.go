@@ -33,15 +33,28 @@ type Connection struct {
 
 	// send carries encoded frames to the writer goroutine. It is bounded: a
 	// client that cannot keep up is dropped rather than buffered without limit.
-	send chan []byte
+	send chan outbound
 
 	// subscriptions is keyed by the client's raw identifier string. Only the
 	// reader goroutine touches it, so it needs no lock.
 	subscriptions map[string]*Subscription
 
-	ctx       context.Context
-	cancel    context.CancelFunc
-	closeOnce sync.Once
+	// stopInternalChannel ends this connection's pub/sub subscription to its own
+	// identity. Reader goroutine only, like the subscriptions.
+	stopInternalChannel func()
+
+	ctx         context.Context
+	cancel      context.CancelFunc
+	closeOnce   sync.Once
+	closingOnce sync.Once
+}
+
+// outbound is one queued frame. final marks the last one: the connection is torn
+// down once it has been written, which is how a disconnect message reaches a
+// client before its socket disappears.
+type outbound struct {
+	frame []byte
+	final bool
 }
 
 func newConnection(s *Server, sock *ws.Conn, r *http.Request, ids Identifiers, logger *slog.Logger) *Connection {
@@ -54,7 +67,7 @@ func newConnection(s *Server, sock *ws.Conn, r *http.Request, ids Identifiers, l
 		request:     r,
 		startedAt:   time.Now(),
 
-		send:          make(chan []byte, s.opts.SendBuffer),
+		send:          make(chan outbound, s.opts.SendBuffer),
 		subscriptions: make(map[string]*Subscription),
 
 		ctx:    ctx,
@@ -124,9 +137,9 @@ func (c *Connection) writeLoop() {
 		select {
 		case <-c.ctx.Done():
 			return
-		case frame := <-c.send:
+		case out := <-c.send:
 			ctx, cancel := context.WithTimeout(c.ctx, writeTimeout)
-			err := c.sock.Write(ctx, ws.MessageText, frame)
+			err := c.sock.Write(ctx, ws.MessageText, out.frame)
 			cancel()
 
 			if err != nil {
@@ -138,6 +151,16 @@ func (c *Connection) writeLoop() {
 				c.closeNow()
 				return
 			}
+
+			if out.final {
+				// The client has its explanation, so the connection can go. Sent
+				// rather than dropped: a close frame turns the client's onclose
+				// into an ordinary event instead of an error. CloseSend rather
+				// than Close because the reader goroutine owns reads and a close
+				// handshake would have to read.
+				c.closeSend()
+				return
+			}
 		}
 	}
 }
@@ -146,8 +169,12 @@ func (c *Connection) writeLoop() {
 // the client is not reading, so the connection is dropped instead of growing the
 // queue.
 func (c *Connection) transmit(frame []byte) {
+	c.enqueue(outbound{frame: frame})
+}
+
+func (c *Connection) enqueue(out outbound) {
 	select {
-	case c.send <- frame:
+	case c.send <- out:
 	case <-c.ctx.Done():
 	default:
 		c.logger.Warn("cable: send buffer full, dropping connection", "buffered", len(c.send))
@@ -166,6 +193,43 @@ func (c *Connection) transmitMessage(m serverMessage) bool {
 	return true
 }
 
+// close tells the client why it is going away and then disconnects it, which is
+// what the client needs in order to decide whether to come back. Both reasons for
+// doing this — a server shutting down and a disconnect from another process —
+// arrive from other goroutines, so it is safe to call from anywhere, and only the
+// first call is acted on.
+//
+// It returns as soon as the message is queued. The connection ends once the
+// writer has flushed it, or immediately if the queue is too full to accept it.
+// ← actioncable/lib/action_cable/connection/base.rb:118 (close)
+func (c *Connection) close(reason string, reconnect bool) {
+	c.closingOnce.Do(func() {
+		frame, err := newDisconnect(reason, reconnect).encode()
+		if err != nil {
+			c.logger.Error("cable: encoding a disconnect message", "error", err)
+			c.closeNow()
+			return
+		}
+
+		c.logger.Debug("cable: disconnecting", "reason", reason, "reconnect", reconnect)
+		c.enqueue(outbound{frame: frame, final: true})
+	})
+}
+
+// waitForClose waits until a close started by close() has been delivered, so a
+// caller that is about to tear the socket down does not do it under the message.
+// Bounded, because a client that has stopped reading must not hold anyone up.
+func (c *Connection) waitForClose() {
+	timer := time.NewTimer(writeTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-c.ctx.Done():
+	case <-timer.C:
+		c.closeNow()
+	}
+}
+
 // closeNow tears the connection down without a disconnect message, unblocking
 // both goroutines. It is safe to call from any goroutine, repeatedly.
 func (c *Connection) closeNow() {
@@ -175,12 +239,22 @@ func (c *Connection) closeNow() {
 	})
 }
 
+// closeSend ends the connection with a WebSocket close frame, for when the client
+// has already been told why in a disconnect message.
+func (c *Connection) closeSend() {
+	c.closeOnce.Do(func() {
+		c.cancel()
+		_ = c.sock.CloseSend(ws.StatusNormalClosure, "")
+	})
+}
+
 // shutdown releases the connection's resources. Called once the reader stops,
 // which is also the only goroutine that touches the subscriptions.
 // ← actioncable/lib/action_cable/connection/base.rb:214 (on_close)
 func (c *Connection) shutdown() {
 	c.closeNow()
 	c.unsubscribeAll()
+	c.unsubscribeFromInternalChannel()
 	c.logger.Debug("cable: connection finished", "duration", time.Since(c.startedAt))
 }
 
