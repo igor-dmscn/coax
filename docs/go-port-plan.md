@@ -307,7 +307,11 @@ Each phase ends runnable and independently verifiable.
 `perform`, guarantor forgets) · Phase 4 ✅ (two JS clients, one broadcast, both received) ·
 Phase 5 ✅ (real Redis 7 + 8, CLIENT KILL recovery, 2.1M fuzz execs) ·
 Phase 6 ✅ (JS client honours both reconnect values; remote disconnect across two servers on real
-Redis) · Phase 7 next.
+Redis) · Phase 7 ✅ (timers leak-free; 10k connections measured) — **all phases done**.
+
+Everything the plan set out is built and verified. What was added beyond it: `cable/pubsubtest`
+(§2 listed it, no phase owned it), `cmd/example`, a `Makefile` for the slow gates, and
+`ws.CloseSend`. What was left out is in §9, each with its workaround.
 
 **Deviations from the phase-5 plan, both deliberate:**
 
@@ -409,6 +413,24 @@ goroutines** (`runtime.NumGoroutine` with a retry loop — no `goleak` dep). 10k
 record RSS and confirm a heartbeat sweep stays under ~100ms. That number is the reason this port
 exists, so measure it.
 
+**Measured** (12-core machine, `make load`), 10,000 idle connections:
+
+| | |
+|---|---|
+| RSS | +388 MiB, ~40 KB per connection — *both ends* live in this process, so halve it for a server |
+| Goroutines | 2.0 per connection |
+| Heartbeat sweep | median **27.9ms**, well inside the 100ms budget |
+| — of which our bookkeeping | **154µs (1%)**; `BenchmarkHeartbeatSweep` puts it at ~240ns per connection |
+| Dropping all 10k | 155ms |
+
+The other 99% of the sweep is the delivery it sets off: the runtime hands the CPU to each writer
+goroutine it readies, so the sweeping goroutine pays for the socket writes. The pings genuinely go
+out in that window — it is not overhead. Still linear at 25,000 connections (87.8ms, 3.5µs each);
+above ~28,000 the *test* runs out of ephemeral ports, since both ends are on loopback.
+
+The budget is expressed per connection (10µs) rather than as a flat 100ms, so it keeps its meaning
+at other sizes.
+
 ---
 
 ## 7. Cross-cutting checks
@@ -431,6 +453,16 @@ exists, so measure it.
    `actioncable-v1-json` — explicit test in Phase 2.
 3. Autobahn's `permessage-deflate` cases will report unimplemented. Confirm that's acceptable
    for a v1 release, or promote deflate out of the follow-ups (§9.1) into a phase.
+
+**Answered:**
+1. **Still open, still deferred.** No use case appeared; §9.4 records it with its workaround.
+2. **Closed in Phase 2.** `TestSubprotocolAlwaysActionCableV1JSON` answers
+   `actioncable-v1-json` to four different offers.
+3. **Closed: excluded, not failed.** The deflate cases (12.x, 13.x) are excluded from the
+   Autobahn run rather than reported as failures, since we never negotiate the extension — a
+   client asking for it simply gets a connection without it. The committed report is 301/301 on
+   the cases that apply. Deflate stays a follow-up (§9.1); the framing layer already validates
+   RSV bits against a negotiated set, so it lands as an addition.
 
 ---
 
