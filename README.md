@@ -26,6 +26,12 @@ Two browser tabs in the same room see each other's messages. `cmd/example/main.g
 thing in one readable file, including a page that speaks the protocol with a plain `WebSocket`
 and no npm.
 
+For private 1:1 messaging, `go run ./cmd/dmexample` (port 8081) shows the pattern that matters
+there: **broadcasting names derived from the authenticated identity, never from params**, so a
+client cannot subscribe to somebody else's messages by asking. It also shows authorisation
+against stored state — carol has blocked dave — and why a conversation and an inbox carry
+different payloads.
+
 ## A server
 
 ```go
