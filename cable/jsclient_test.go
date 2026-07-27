@@ -69,10 +69,15 @@ const waitUntil = async (what, cond) => {
 const received = []
 let connectedCount = 0
 
+// willAttemptReconnect is the client's own reading of the reconnect field in a
+// disconnect message, which is the thing that flag exists to control.
+let chatWillReconnect = null
+
 const chat = consumer.subscriptions.create({ channel: "ChatChannel", room: "1" }, {
   connected() { connectedCount++ },
   received(data) { received.push(data) },
   rejected() { fail("ChatChannel was rejected") },
+  disconnected({ willAttemptReconnect }) { chatWillReconnect = willAttemptReconnect },
 })
 
 await waitUntil("ChatChannel to connect", () => connectedCount > 0)
@@ -114,10 +119,12 @@ otherConsumer.connect()
 
 const otherReceived = []
 let otherConnected = false
+let otherWillReconnect = null
 otherConsumer.subscriptions.create({ channel: "ChatChannel", room: "1" }, {
   connected() { otherConnected = true },
   received(data) { otherReceived.push(data) },
   rejected() { fail("the second ChatChannel was rejected") },
+  disconnected({ willAttemptReconnect }) { otherWillReconnect = willAttemptReconnect },
 })
 
 await waitUntil("the second client to connect", () => otherConnected)
@@ -156,10 +163,21 @@ await waitUntil("the second client to be disconnected", () => !otherConsumer.con
 if (otherConsumer.connection.monitor.isRunning()) {
   fail("the monitor is still running after reconnect=false")
 }
+if (otherWillReconnect !== false) fail("willAttemptReconnect was " + otherWillReconnect)
 
 // The first client is a different identity, so it is untouched.
 await sleep(500)
 if (!consumer.connection.isOpen()) fail("the wrong client was disconnected")
+
+// Graceful shutdown, the other value of the same flag: the client is told to come
+// back, so it keeps its monitor running and retries.
+consumer.subscriptions.create({ channel: "ShutdownChannel" }, {})
+
+await waitUntil("the server to shut down", () => !consumer.connection.isOpen())
+if (chatWillReconnect !== true) fail("willAttemptReconnect was " + chatWillReconnect)
+if (!consumer.connection.monitor.isRunning()) {
+  fail("the monitor stopped despite reconnect=true")
+}
 
 otherConsumer.disconnect()
 consumer.disconnect()
@@ -287,6 +305,25 @@ func (disconnectChannel) Unsubscribed(context.Context) {}
 
 func (disconnectChannel) Perform(context.Context, string, json.RawMessage) error { return nil }
 
+// shutdownChannel shuts the whole server down when subscribed to, so the JS
+// client can be shown a real graceful shutdown. Shutdown runs on its own
+// goroutine: it waits for connections to finish, and this one cannot finish until
+// Subscribed returns.
+type shutdownChannel struct{ srv *Server }
+
+func (c shutdownChannel) Subscribed(context.Context) error {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		c.srv.Shutdown(ctx)
+	}()
+	return nil
+}
+
+func (shutdownChannel) Unsubscribed(context.Context) {}
+
+func (shutdownChannel) Perform(context.Context, string, json.RawMessage) error { return nil }
+
 // rejectedChannel refuses every subscription.
 type rejectedChannel struct{}
 
@@ -322,6 +359,7 @@ func startCableServer(t *testing.T) string {
 	srv.Register("DisconnectChannel", func(s *Subscription) Channel {
 		return disconnectChannel{srv: srv, sub: s}
 	})
+	srv.Register("ShutdownChannel", func(*Subscription) Channel { return shutdownChannel{srv: srv} })
 
 	mux := http.NewServeMux()
 	mux.Handle(DefaultMountPath, srv)

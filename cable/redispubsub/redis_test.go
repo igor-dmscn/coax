@@ -189,6 +189,75 @@ func TestRedisEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRedisRemoteDisconnect is the phase-6 criterion on the real backend: two
+// servers that share nothing but Redis, and a user disconnected on the one that
+// has never seen them.
+func TestRedisRemoteDisconnect(t *testing.T) {
+	opts := realRedis(t)
+	ids := cable.Identifiers{"current_user": prefix(t) + "42"}
+
+	holderPubSub := New(opts)
+	defer holderPubSub.Close()
+
+	holder := cable.New(&cable.Options{
+		PubSub: holderPubSub,
+		Logger: testLogger(t),
+		Authenticate: func(*http.Request) (cable.Identifiers, error) {
+			return ids, nil
+		},
+	})
+	defer holder.Close()
+
+	hs := httptest.NewServer(holder)
+	defer hs.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, err := ws.Dial(ctx, "ws"+strings.TrimPrefix(hs.URL, "http"), &ws.DialOptions{
+		Subprotocols: []string{cable.Subprotocol},
+	})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.CloseNow()
+
+	if got := readFrame(t, ctx, conn)["type"]; got != "welcome" {
+		t.Fatalf("first message type = %v, want welcome", got)
+	}
+
+	// A second server, with its own Redis connections, holding no connections at
+	// all: the only thing it shares with the first is the backend.
+	otherPubSub := New(opts)
+	defer otherPubSub.Close()
+
+	other := cable.New(&cable.Options{PubSub: otherPubSub, Logger: testLogger(t)})
+	defer other.Close()
+
+	if err := other.Disconnect(ctx, ids, false); err != nil {
+		t.Fatalf("Disconnect() error = %v", err)
+	}
+
+	// Heartbeats may arrive first, so read until the disconnect.
+	for range 10 {
+		frame := readFrame(t, ctx, conn)
+		if frame["type"] == "ping" {
+			continue
+		}
+		if frame["type"] != "disconnect" {
+			t.Fatalf("message type = %v, want disconnect", frame["type"])
+		}
+		if frame["reason"] != "remote" {
+			t.Errorf("reason = %v, want remote", frame["reason"])
+		}
+		if frame["reconnect"] != false {
+			t.Errorf("reconnect = %v, want false", frame["reconnect"])
+		}
+		return
+	}
+	t.Fatal("the connection was never disconnected")
+}
+
 // streamingChannel streams from one fixed broadcasting.
 type streamingChannel struct {
 	sub          *cable.Subscription

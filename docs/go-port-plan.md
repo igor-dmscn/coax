@@ -305,7 +305,9 @@ Each phase ends runnable and independently verifiable.
 **Status:** Phase 0 ✅ · Phase 1 ✅ (Autobahn 301/301, 0 allocs/op) · Phase 2 ✅ (real
 `@rails/actioncable` client verified) · Phase 3 ✅ (JS client `connected()`, `rejected()`,
 `perform`, guarantor forgets) · Phase 4 ✅ (two JS clients, one broadcast, both received) ·
-Phase 5 ✅ (real Redis 7 + 8, CLIENT KILL recovery, 2.1M fuzz execs) · Phase 6 next.
+Phase 5 ✅ (real Redis 7 + 8, CLIENT KILL recovery, 2.1M fuzz execs) ·
+Phase 6 ✅ (JS client honours both reconnect values; remote disconnect across two servers on real
+Redis) · Phase 7 next.
 
 **Deviations from the phase-5 plan, both deliberate:**
 
@@ -385,6 +387,20 @@ close with reason `remote`; `RemoteConnections().Disconnect()`; graceful shutdow
 `server_restart` (`reconnect: true`) to all, then draining under a deadline.
 → **verify:** two Go processes on one Redis — disconnecting a user on A closes their socket on
 B. `SIGTERM` ⇒ every JS client logs `server_restart` and reconnects.
+
+**Done, with one substitution.** Both criteria are covered:
+`TestRedisRemoteDisconnect` runs two `cable.Server`s with separate Redis connections, sharing
+nothing else, and disconnects a user on the one that never held them. For the second, the JS test
+asserts through the client's own `disconnected({willAttemptReconnect})` callback — `false` after a
+remote disconnect, `true` after a shutdown — rather than sending an actual `SIGTERM`, which would
+end the test process. The client's log shows both: `Reason: remote` → `ConnectionMonitor stopped`,
+`Reason: server_restart` → monitor still running.
+
+Also needed a small addition to `ws`: `CloseSend`. `Close` completes the close handshake, which
+reads, so it cannot be called while the reader goroutine owns reads — leaving only `CloseNow`,
+which tells the peer nothing and surfaces in the browser as an `onerror`. `CloseSend` writes the
+close frame and closes without waiting for the answer. This is a real gap in a library that
+documents single-reader semantics, not a concession to cable (§1b), and Autobahn stayed 301/301.
 
 ### Phase 7 — periodic timers + hardening
 `Periodically` as a ticker goroutine bound to the subscription context.
