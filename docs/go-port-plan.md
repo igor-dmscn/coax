@@ -4,8 +4,9 @@ Target: a Go framework that is wire-compatible with `actioncable-v1-json` — th
 `@rails/actioncable` JS client works against it — with **zero runtime dependencies**,
 including a hand-rolled RFC 6455 implementation and a hand-rolled Redis pubsub client.
 
-Reference: [internals](./action-cable-internals.md), [protocol](./action-cable-protocol.md),
-[glossary](./action-cable-glossary.md).
+Reference — the original: [internals](./action-cable-internals.md),
+[protocol](./action-cable-protocol.md), [glossary](./action-cable-glossary.md).
+What was built: [implementation](./implementation.md), [flows](./flows.md).
 
 ---
 
