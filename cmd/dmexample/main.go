@@ -598,6 +598,10 @@ const renderRoster = () => {
 // removes them.
 setInterval(() => { if (prune()) renderRoster() }, 1000)
 
+// Timers are throttled in a hidden tab, so bring both displays up to date as soon
+// as it is looked at.
+document.addEventListener("visibilitychange", () => { prune(); renderRoster() })
+
 const render = (m) =>
   add("thread", "<b>" + escape(m.from) + ":</b> " + escape(m.body) +
                 " <span class='meta'>" + m.at + "</span>", m.from === me ? "mine" : "")
@@ -627,15 +631,20 @@ document.getElementById("me").value = query.get("me") || "alice"
 document.getElementById("peer").value = query.get("with") || "bob"
 
 document.getElementById("send").onclick = send
+// Throttled rather than sent per keystroke: the indicator lasts longer than the
+// gap between announcements, so once a second is enough.
+let typingSentAt = 0
+
 document.getElementById("body").onkeydown = (e) => {
   if (e.key === "Enter") return send()
-  if (socket) {
-    socket.send(JSON.stringify({
-      command: "message",
-      identifier: thread,
-      data: JSON.stringify({ action: "typing" }),
-    }))
-  }
+  if (!socket || Date.now() - typingSentAt < 1000) return
+  typingSentAt = Date.now()
+
+  socket.send(JSON.stringify({
+    command: "message",
+    identifier: thread,
+    data: JSON.stringify({ action: "typing" }),
+  }))
 }
 document.getElementById("connect").click()
 </script>

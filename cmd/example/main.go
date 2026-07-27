@@ -155,21 +155,39 @@ func (c *chatChannel) Subscribed(ctx context.Context) error {
 func (c *chatChannel) Unsubscribed(context.Context) {}
 
 func (c *chatChannel) Perform(ctx context.Context, action string, data json.RawMessage) error {
-	if action != "speak" {
+	switch action {
+	case "speak":
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return err
+		}
+		return c.server.Broadcast(ctx, c.room, map[string]string{
+			"kind": "message",
+			"from": c.me(),
+			"body": payload.Body,
+		})
+
+	case "typing":
+		// Broadcast and forgotten. Nothing is stored, and nobody who joins in a
+		// second's time needs to know: a typing indicator is only true for about
+		// as long as it takes to arrive.
+		//
+		// It goes to the whole room, the sender included, because a broadcast has
+		// no way to exclude anyone — the client ignores its own.
+		return c.server.Broadcast(ctx, c.room, map[string]string{
+			"kind": "typing",
+			"from": c.me(),
+		})
+
+	default:
 		return fmt.Errorf("unknown action %q", action)
 	}
+}
 
-	var payload struct {
-		Body string `json:"body"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return err
-	}
-
-	return c.server.Broadcast(ctx, c.room, map[string]string{
-		"from": c.sub.Connection().Identifiers()["user"],
-		"body": payload.Body,
-	})
+func (c *chatChannel) me() string {
+	return c.sub.Connection().Identifiers()["user"]
 }
 
 // clockChannel pushes without being asked, which is what periodic timers are for.
@@ -211,6 +229,7 @@ const page = `<!doctype html>
 <h1>coax</h1>
 <p>User <input id="user" value="alice" size="8"> in room <input id="room" value="1" size="4">
 <button id="connect">connect</button> <span id="clock" class="meta"></span>
+<p id="typing" class="meta">&nbsp;</p>
 <div id="log"></div>
 <p><input id="body" size="40" placeholder="say something" autocomplete="off"> <button id="send">send</button>
 <script>
@@ -220,11 +239,24 @@ const log = (line, cls = "") => {
   el.scrollTop = el.scrollHeight
 }
 
-let socket, chat, clock
+let socket, chat, clock, me, typingSentAt = 0
+
+// Who is typing, and when we last heard so. A room has any number of them, unlike
+// a 1:1 conversation, so this is a table rather than a flag.
+const typers = new Map()
+
+// Sent at most this often while typing, and shown for this long after the last
+// one heard. The gap between them is the slack that keeps an indicator from
+// flickering between keystrokes.
+const typingEvery = 1000
+const typingFor = 3000
 
 document.getElementById("connect").onclick = () => {
   const user = document.getElementById("user").value
   const room = document.getElementById("room").value
+  me = user
+  typers.clear()
+  renderTyping()
 
   if (socket) socket.close()
   socket = new WebSocket("ws://" + location.host + "/cable?user=" + encodeURIComponent(user),
@@ -266,10 +298,46 @@ document.getElementById("connect").onclick = () => {
     if (message.identifier === clock) {
       document.getElementById("clock").textContent = message.message.now
     } else if (message.identifier === chat) {
-      log("<b>" + message.message.from + ":</b> " + message.message.body)
+      const payload = message.message
+      if (payload.kind === "typing") {
+        if (payload.from !== me) {
+          typers.set(payload.from, Date.now())
+          renderTyping()
+        }
+      } else {
+        // Someone spoke, so they have stopped typing.
+        typers.delete(payload.from)
+        renderTyping()
+        log("<b>" + payload.from + ":</b> " + payload.body)
+      }
     }
   }
 }
+
+// renderTyping drops anyone who has gone quiet and describes the rest. Called on
+// every typing message as well as on a timer, because a background tab has its
+// timers throttled to about once a minute while its WebSocket messages still
+// arrive on time.
+const renderTyping = () => {
+  const cutoff = Date.now() - typingFor
+  for (const [who, at] of typers) {
+    if (at < cutoff) typers.delete(who)
+  }
+
+  const names = [...typers.keys()].sort()
+  document.getElementById("typing").innerHTML =
+    names.length === 0 ? "&nbsp;" :
+    names.length === 1 ? names[0] + " is typing…" :
+    names.length === 2 ? names[0] + " and " + names[1] + " are typing…" :
+                         names.length + " people are typing…"
+}
+
+setInterval(renderTyping, 500)
+
+// A hidden tab has its timers throttled to about once a minute, so its indicator
+// goes stale — which nobody can see, by definition. This makes it right again the
+// moment the tab is looked at, rather than up to a minute later.
+document.addEventListener("visibilitychange", renderTyping)
 
 const send = () => {
   const input = document.getElementById("body")
@@ -281,10 +349,28 @@ const send = () => {
     data: JSON.stringify({ action: "speak", body: input.value }),
   }))
   input.value = ""
+  typingSentAt = 0
+}
+
+// Throttled rather than sent per keystroke: the indicator lasts three seconds, so
+// announcing once a second is enough, and a room of twenty people typing is then
+// twenty messages a second instead of hundreds.
+const announceTyping = () => {
+  if (!socket || Date.now() - typingSentAt < typingEvery) return
+  typingSentAt = Date.now()
+
+  socket.send(JSON.stringify({
+    command: "message",
+    identifier: chat,
+    data: JSON.stringify({ action: "typing" }),
+  }))
 }
 
 document.getElementById("send").onclick = send
-document.getElementById("body").onkeydown = (e) => { if (e.key === "Enter") send() }
+document.getElementById("body").onkeydown = (e) => {
+  if (e.key === "Enter") return send()
+  announceTyping()
+}
 document.getElementById("connect").click()
 </script>
 `
