@@ -29,8 +29,9 @@ and no npm.
 For private 1:1 messaging, `go run ./cmd/dmexample` (port 8081) shows the pattern that matters
 there: **broadcasting names derived from the authenticated identity, never from params**, so a
 client cannot subscribe to somebody else's messages by asking. It also shows authorisation
-against stored state — carol has blocked dave — and why a conversation and an inbox carry
-different payloads.
+against stored state — carol has blocked dave — why a conversation and an inbox carry different
+payloads, and presence: who is in the conversation, announced on a `Periodically` heartbeat and
+expired when it stops, which is the only way to get presence right over pub/sub.
 
 ## A server
 

@@ -3,10 +3,14 @@
 // rather than accepted on the strength of its params.
 //
 //	go run ./cmd/dmexample
-//	open http://localhost:8081        # as alice, in one tab
-//	open http://localhost:8081        # as bob, in another
+//	open "http://localhost:8081/?me=alice&with=bob"
+//	open "http://localhost:8081/?me=bob&with=alice"
 //
-// carol has blocked dave, so opening that thread demonstrates a rejection.
+// carol has blocked dave, so /?me=carol&with=dave demonstrates a rejection.
+//
+// Presence — who is in the conversation — is announced rather than looked up, and
+// expires if it stops being announced. See the presence section below for why that
+// is the only way to get it right over pub/sub.
 //
 // Two broadcastings per user, carrying different things on purpose:
 //
@@ -24,6 +28,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -33,8 +39,10 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -190,6 +198,54 @@ func conversation(a, b string) string {
 func inbox(user string) string { return "user:" + user }
 
 // ---------------------------------------------------------------------------
+// Presence: who is in this conversation right now.
+//
+// The one thing pub/sub cannot deliver on its own, because presence is *state*
+// and pub/sub carries *events*. There is no roster to read: each participant
+// announces itself, and everyone builds their own table from what they hear.
+//
+//	join   on subscribe, so the others learn immediately
+//	here   every presenceInterval, and in reply to someone else's join
+//	leave  on unsubscribe — best effort only
+//
+// The heartbeat is what makes it correct, and `leave` is only what makes it
+// quick. A leave never arrives when a process is killed, or when the backend is
+// unreachable at that moment — so anyone not heard from within presenceExpiry is
+// dropped regardless. Without that, a crashed server leaves its users online
+// forever.
+//
+// This works across processes with no shared state, which is what makes it worth
+// showing: two servers on one Redis need nothing but the pub/sub they already
+// have. A production system at scale would keep the roster in Redis instead and
+// pay for the round trips.
+const (
+	presenceInterval = 5 * time.Second
+
+	// Two missed announcements plus slack. Sent to the client, which does the
+	// expiring, so the number lives in one place.
+	presenceExpiry = presenceInterval*2 + presenceInterval/2
+)
+
+// procID distinguishes this process, so that presence identifiers minted by two
+// servers sharing one Redis cannot collide.
+var procID = func() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "p"
+	}
+	return hex.EncodeToString(b[:])
+}()
+
+var presenceCounter atomic.Int64
+
+// nextPresenceID identifies one *subscription*, not one user. A user with three
+// tabs open is three of these, which is what lets a client drop the tab that left
+// while keeping the user online.
+func nextPresenceID() string {
+	return procID + "-" + strconv.FormatInt(presenceCounter.Add(1), 10)
+}
+
+// ---------------------------------------------------------------------------
 
 // inboxChannel delivers notifications for a user wherever they are connected,
 // including tabs and devices with no conversation open. It takes no params: the
@@ -216,6 +272,9 @@ type threadChannel struct {
 	sub    *coax.Subscription
 
 	me, peer, name string
+
+	// presenceID identifies this subscription among a user's tabs and devices.
+	presenceID string
 }
 
 func (c *threadChannel) Subscribed(ctx context.Context) error {
@@ -241,20 +300,64 @@ func (c *threadChannel) Subscribed(ctx context.Context) error {
 	}
 
 	c.name = conversation(c.me, c.peer)
+	c.presenceID = nextPresenceID()
+
 	if err := c.sub.StreamFrom(ctx, c.name); err != nil {
 		return err
 	}
 
 	// Sent after the stream is live, so nothing published in between is missed.
 	// A larger app would page this over HTTP instead; the ordering requirement is
-	// the same either way.
-	return c.sub.Transmit(map[string]any{
-		"kind":     "history",
-		"messages": c.store.history(c.name),
+	// the same either way. presenceEvery travels with it so the client expires
+	// stale participants on the server's schedule rather than a guess.
+	if err := c.sub.Transmit(map[string]any{
+		"kind":          "history",
+		"messages":      c.store.history(c.name),
+		"me":            c.me,
+		"presenceID":    c.presenceID,
+		"presenceEvery": presenceInterval.Milliseconds(),
+		"presenceFor":   presenceExpiry.Milliseconds(),
+	}); err != nil {
+		return err
+	}
+
+	if err := c.announce(ctx, "join"); err != nil {
+		return err
+	}
+
+	// Announce on a schedule for as long as the subscription lasts. This is the
+	// part that makes presence recover by itself: nothing has to be told about a
+	// crash, it just stops being announced.
+	return c.sub.Periodically(presenceInterval, func(ctx context.Context) error {
+		return c.announce(ctx, "here")
 	})
 }
 
-func (c *threadChannel) Unsubscribed(context.Context) {}
+// Unsubscribed announces the departure. Best effort: this never runs when the
+// process is killed, and the broadcast is dropped if the backend is unreachable,
+// which is exactly why the client also expires what it stops hearing about.
+//
+// The context is usable here even during connection teardown, because
+// unsubscribeAll hands one that is not already cancelled.
+func (c *threadChannel) Unsubscribed(ctx context.Context) {
+	if c.name == "" {
+		return // rejected before it ever streamed
+	}
+	if err := c.announce(ctx, "leave"); err != nil {
+		// Nothing to do about it: the expiry covers this case.
+		return
+	}
+}
+
+// announce tells the conversation about this subscription.
+func (c *threadChannel) announce(ctx context.Context, event string) error {
+	return c.server.Broadcast(ctx, c.name, map[string]any{
+		"kind":  "presence",
+		"event": event,
+		"user":  c.me,
+		"id":    c.presenceID,
+	})
+}
 
 func (c *threadChannel) Perform(ctx context.Context, action string, data json.RawMessage) error {
 	switch action {
@@ -264,6 +367,15 @@ func (c *threadChannel) Perform(ctx context.Context, action string, data json.Ra
 		// Not persisted, and not sent to the inboxes: a typing indicator is only
 		// interesting to someone looking at the conversation.
 		return c.server.Broadcast(ctx, c.name, map[string]any{"kind": "typing", "from": c.me})
+	case "here":
+		// Someone announced a join, and this is the reply so they do not have to
+		// wait a whole interval to see us.
+		//
+		// The client asks for this rather than the server answering by itself,
+		// because a channel does not observe its own streams: StreamFrom delivers
+		// to the socket, not back into the channel. Custom stream handlers would
+		// change that and are a deliberate omission (go-port-plan.md section 9.4).
+		return c.announce(ctx, "here")
 	default:
 		return fmt.Errorf("unknown action %q", action)
 	}
@@ -346,13 +458,16 @@ const page = `<!doctype html>
  h2 { font-size: 1rem; margin: 1rem 0 .25rem }
 </style>
 <h1>coax — direct messages</h1>
+<p class="meta">Open two windows: <a href="/?me=alice&amp;with=bob">alice ↔ bob</a> ·
+<a href="/?me=bob&amp;with=alice">bob ↔ alice</a> ·
+<a href="/?me=carol&amp;with=dave">carol ↔ dave (blocked)</a></p>
 <div class="row">
   I am <input id="me" value="alice" size="8">
   talking to <input id="peer" value="bob" size="8">
   <button id="connect">connect</button>
   <span id="typing" class="meta"></span>
 </div>
-<h2>conversation</h2>
+<h2>conversation <span id="roster" class="meta"></span></h2>
 <div id="thread"></div>
 <div class="row" style="margin-top:.75rem">
   <input id="body" size="40" placeholder="private message" autocomplete="off">
@@ -368,7 +483,12 @@ const add = (where, html, cls = "") => {
 }
 const escape = (s) => s.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))
 
-let socket, inbox, thread, me, typingTimer
+let socket, inbox, thread, me, myPresenceID, typingTimer
+let presenceFor = 12500
+
+// Who is in the conversation, keyed by subscription rather than by user: one
+// person with two tabs is two entries, so closing one does not take them offline.
+const present = new Map()
 
 document.getElementById("connect").onclick = () => {
   me = document.getElementById("me").value
@@ -379,6 +499,8 @@ document.getElementById("connect").onclick = () => {
   // user received them.
   document.getElementById("thread").innerHTML = ""
   document.getElementById("notices").innerHTML = ""
+  present.clear()
+  renderRoster()
   socket = new WebSocket("ws://" + location.host + "/cable?user=" + encodeURIComponent(me),
                          ["actioncable-v1-json"])
 
@@ -416,7 +538,11 @@ document.getElementById("connect").onclick = () => {
     const payload = frame.message
     if (frame.identifier === thread) {
       if (payload.kind === "history") {
+        myPresenceID = payload.presenceID
+        presenceFor = payload.presenceFor
         payload.messages.forEach(render)
+      } else if (payload.kind === "presence") {
+        onPresence(payload)
       } else if (payload.kind === "message") {
         render(payload.message)
       } else if (payload.kind === "typing" && payload.from !== me) {
@@ -427,6 +553,50 @@ document.getElementById("connect").onclick = () => {
     }
   }
 }
+
+const onPresence = ({ event, user, id }) => {
+  if (event === "leave") {
+    present.delete(id)
+  } else {
+    present.set(id, { user, seen: Date.now() })
+
+    // Answer a join so the newcomer sees us now rather than in a few seconds.
+    if (event === "join" && id !== myPresenceID) {
+      socket.send(JSON.stringify({
+        command: "message",
+        identifier: thread,
+        data: JSON.stringify({ action: "here" }),
+      }))
+    }
+  }
+  prune()
+  renderRoster()
+}
+
+// prune drops anyone we have stopped hearing from. Called on every presence
+// message as well as on a timer, because a background tab has its timers throttled
+// to about once a minute by the browser — but its WebSocket messages still arrive
+// on time. Our own announcement comes back to us through the broadcast, so there
+// is always traffic to prune on for as long as we are subscribed.
+const prune = () => {
+  const cutoff = Date.now() - presenceFor
+  let changed = false
+  for (const [id, p] of present) {
+    if (p.seen < cutoff) { present.delete(id); changed = true }
+  }
+  return changed
+}
+
+const renderRoster = () => {
+  const users = [...new Set([...present.values()].map((p) => p.user))].sort()
+  document.getElementById("roster").textContent =
+    users.length ? "— here: " + users.join(", ") : "— nobody here"
+}
+
+// The fallback, for a conversation with no traffic at all. Neither a killed
+// process nor a dropped socket sends a leave, so expiry is the only thing that
+// removes them.
+setInterval(() => { if (prune()) renderRoster() }, 1000)
 
 const render = (m) =>
   add("thread", "<b>" + escape(m.from) + ":</b> " + escape(m.body) +
@@ -449,6 +619,12 @@ const send = () => {
   }))
   input.value = ""
 }
+
+// The two participants come from the URL, so a demo is two links rather than
+// two people typing the same names into two windows.
+const query = new URL(location).searchParams
+document.getElementById("me").value = query.get("me") || "alice"
+document.getElementById("peer").value = query.get("with") || "bob"
 
 document.getElementById("send").onclick = send
 document.getElementById("body").onkeydown = (e) => {
