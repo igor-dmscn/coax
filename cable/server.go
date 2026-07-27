@@ -314,15 +314,26 @@ func (s *Server) heartbeat() {
 				continue
 			}
 
-			// One encode per tick, shared by every connection: nothing mutates
-			// the frame, and server-side frames are written unmasked, so the
-			// bytes go out untouched.
-			conns = s.snapshot(conns)
-			for _, c := range conns {
-				c.transmit(frame)
-			}
+			conns = s.sweep(frame, conns)
 		}
 	}
+}
+
+// sweep queues one frame on every connection, reusing dst to hold the snapshot.
+//
+// One encode per tick, shared by every connection: nothing mutates the frame, and
+// server-side frames are written unmasked, so the bytes go out untouched. In-place
+// masking would make this sharing a data race.
+//
+// It is the one piece of work that scales with the number of connections on a
+// fixed schedule, which is why it does no I/O: each transmit is a send on a
+// buffered channel, so a slow client cannot slow the sweep down.
+func (s *Server) sweep(frame []byte, dst []*Connection) []*Connection {
+	dst = s.snapshot(dst)
+	for _, c := range dst {
+		c.transmit(frame)
+	}
+	return dst
 }
 
 // originAllowed applies Action Cable's origin rules: the server's own host is
