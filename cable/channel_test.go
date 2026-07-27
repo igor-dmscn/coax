@@ -31,6 +31,17 @@ type performed struct {
 	data   json.RawMessage
 }
 
+// send records an event without ever blocking. A test double that can block the
+// code it observes is worse than one that drops: a test that stops draining would
+// hang a connection's reader goroutine, and the failure would look like a leak in
+// the library rather than in the test.
+func send[T any](events chan T, event T) {
+	select {
+	case events <- event:
+	default:
+	}
+}
+
 func newRecorder() *recorder {
 	return &recorder{
 		subscribed:   make(chan *Subscription, 8),
@@ -49,7 +60,7 @@ type recorded struct {
 }
 
 func (c *recorded) Subscribed(ctx context.Context) error {
-	c.r.subscribed <- c.sub
+	send(c.r.subscribed, c.sub)
 	if c.r.onSubscribed != nil {
 		return c.r.onSubscribed(ctx, c.sub)
 	}
@@ -57,11 +68,11 @@ func (c *recorded) Subscribed(ctx context.Context) error {
 }
 
 func (c *recorded) Unsubscribed(context.Context) {
-	c.r.unsubscribed <- c.sub.Identifier()
+	send(c.r.unsubscribed, c.sub.Identifier())
 }
 
 func (c *recorded) Perform(_ context.Context, action string, data json.RawMessage) error {
-	c.r.performed <- performed{action: action, data: data}
+	send(c.r.performed, performed{action: action, data: data})
 	if c.r.onPerform != nil {
 		return c.r.onPerform(c.sub, action, data)
 	}

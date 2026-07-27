@@ -86,9 +86,11 @@ type Subscription struct {
 	channel    string
 	impl       Channel
 
-	// streams maps a broadcasting to the function that stops listening to it.
-	// Touched only from the reader goroutine, like the subscriptions map itself.
-	streams map[string]func()
+	// streams maps a broadcasting to the function that stops listening to it,
+	// and stopTimers ends the periodic timers. Both are touched only from the
+	// reader goroutine, like the subscriptions map itself.
+	streams    map[string]func()
+	stopTimers []func()
 }
 
 // Identifier returns the subscription's identifier: the raw JSON string the
@@ -161,10 +163,10 @@ func (c *Connection) addSubscription(identifier string) {
 	if err := sub.impl.Subscribed(c.ctx); err != nil {
 		// Divergence: Rails adds the subscription first and calls unsubscribed
 		// while removing it again on rejection. Here a rejected subscription
-		// never existed, so Unsubscribed is not called for one. Its streams are
-		// still stopped: a channel may well have opened one before deciding to
-		// reject, and those would otherwise be left listening forever.
-		sub.StopAllStreams()
+		// never existed, so Unsubscribed is not called for one. Whatever it
+		// started is still stopped: a channel may well have opened a stream or a
+		// timer before deciding to reject, and those would otherwise run forever.
+		sub.stop()
 		c.logger.Info("cable: subscription rejected", "channel", params.Channel, "error", err)
 		c.transmitMessage(newRejectSubscription(identifier))
 		return
@@ -187,11 +189,11 @@ func (c *Connection) removeSubscription(identifier string) {
 
 	delete(c.subscriptions, identifier)
 
-	// Streams stop after Unsubscribed, matching Rails' callback order, so a
-	// channel can still say goodbye over them.
+	// Streams and timers stop after Unsubscribed, matching Rails' callback order,
+	// so a channel can still say goodbye over them.
 	// ← actioncable/lib/action_cable/channel/streams.rb:74 (on_unsubscribe)
 	sub.impl.Unsubscribed(c.ctx)
-	sub.StopAllStreams()
+	sub.stop()
 	c.logger.Debug("cable: unsubscribed", "channel", sub.channel)
 }
 
@@ -232,6 +234,6 @@ func (c *Connection) unsubscribeAll() {
 	for identifier, sub := range c.subscriptions {
 		delete(c.subscriptions, identifier)
 		sub.impl.Unsubscribed(ctx)
-		sub.StopAllStreams()
+		sub.stop()
 	}
 }
