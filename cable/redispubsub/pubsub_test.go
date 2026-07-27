@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,16 +13,41 @@ import (
 	"go-cable/cable/pubsubtest"
 )
 
+// testLogger writes server logs into the test's output, and stops when the test
+// ends.
+//
+// The stopping matters: a hijacked WebSocket connection is not one of the
+// "outstanding requests" httptest.Server.Close waits for, so its handler can
+// still be shutting down — and logging — after the test function has returned.
+// Logging into a finished test is a panic and a data race.
 func testLogger(t *testing.T) *slog.Logger {
-	t.Helper()
-	return slog.New(slog.NewTextHandler(testWriter{t}, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	w := &testWriter{t: t}
+	t.Cleanup(w.stop)
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-type testWriter struct{ t *testing.T }
+type testWriter struct {
+	mu      sync.Mutex
+	t       *testing.T
+	stopped bool
+}
 
-func (w testWriter) Write(p []byte) (int, error) {
-	w.t.Logf("%s", p)
+func (w *testWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.stopped {
+		w.t.Logf("%s", p)
+	}
 	return len(p), nil
+}
+
+// stop runs as a cleanup, which is still inside the test, so anything logged up
+// to that point is reported.
+func (w *testWriter) stop() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stopped = true
 }
 
 // newTestPubSub returns an adapter pointed at a fake Redis, closed with the test.
