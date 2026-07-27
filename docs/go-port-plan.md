@@ -305,7 +305,17 @@ Each phase ends runnable and independently verifiable.
 **Status:** Phase 0 ✅ · Phase 1 ✅ (Autobahn 301/301, 0 allocs/op) · Phase 2 ✅ (real
 `@rails/actioncable` client verified) · Phase 3 ✅ (JS client `connected()`, `rejected()`,
 `perform`, guarantor forgets) · Phase 4 ✅ (two JS clients, one broadcast, both received) ·
-Phase 5 next.
+Phase 5 ✅ (real Redis 7 + 8, CLIENT KILL recovery, 2.1M fuzz execs) · Phase 6 next.
+
+**Deviations from the phase-5 plan, both deliberate:**
+
+- **`cable/pubsubtest` was built here, not left for later.** A conformance suite is worth
+  writing when the second implementation appears, and the Redis adapter passing the exact suite
+  the in-memory one passes is stronger evidence than any adapter-specific test.
+- **No Rails process in the interop test.** Rails' Redis contract is `PUBLISH <broadcasting>
+  <json>`, which a raw publish reproduces exactly; booting Rails would test the `redis` gem, not
+  us. `TestRedisEndToEnd` publishes that shape and asserts the client's frame byte for byte.
+  Running against a real Rails app is a follow-up (§9.5) if it ever earns itself.
 
 ### Phase 0 — protocol types
 The 3 inbound commands, 6 outbound frame shapes, `INTERNAL` constants copied from
@@ -469,7 +479,22 @@ Deliberate omissions, each with a working substitute today:
   is a second `StreamFrom` variant, not a redesign.
 - **Periodic timers** (`periodically`) — Phase 7.
 
-### 9.5 Smaller items
+### 9.5 Redis gaps, named rather than hidden
+The adapter covers what pub/sub needs and stops there. Each of these is a real gap with a
+workaround today:
+
+- **Sentinel discovery** — resolve the current master with `Options.Dialer`. Doing it properly
+  means speaking `SENTINEL get-master-addr-by-name` and subscribing to `+switch-master`, which is
+  a second protocol's worth of work.
+- **Cluster sharded pub/sub** (`SSUBSCRIBE`) — not needed: ordinary `PUBLISH` is broadcast
+  cluster-wide, so a cluster behaves as one server. Sharded pub/sub is the opt-in scaling variant.
+- **Interop test against a real Rails process** — see the phase-5 note. Cheap once a Rails app is
+  around; proves nothing new about our code.
+- **A go-redis-backed adapter** as an alternative, in its own module so the core `go.mod` stays
+  empty. ~80 LOC against `PubSub`, provable with `pubsubtest`. The escape hatch if the
+  hand-rolled client ever disappoints.
+
+### 9.6 Smaller items
 - **Masking in assembly** (amd64/arm64), the way `coder/websocket` does it. Only if a benchmark
   says the pure-Go word-wise mask is the bottleneck. The pure-Go path stays as the reference
   implementation, with a differential test asserting the two agree on random inputs.
