@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"go-cable/ws"
+	"github.com/igor-dmscn/coax-claude-impl/ws"
 )
 
 // writeTimeout bounds a single frame write, so one unresponsive client cannot
@@ -98,7 +98,7 @@ func (c *Connection) readLoop() {
 		if typ != ws.MessageText {
 			// Action Cable is JSON over text frames.
 			// ← actioncable/lib/action_cable/server/socket/message_buffer.rb:21
-			c.logger.Error("cable: ignoring non-text message", "type", typ.String())
+			c.logger.Error("coax: ignoring non-text message", "type", typ.String())
 			continue
 		}
 
@@ -115,7 +115,7 @@ func (c *Connection) readLoop() {
 func (c *Connection) handleMessage(data []byte) {
 	cmd, err := decodeCommand(data)
 	if err != nil {
-		c.logger.Error("cable: could not handle incoming message", "error", err)
+		c.logger.Error("coax: could not handle incoming message", "error", err)
 		return
 	}
 
@@ -146,7 +146,7 @@ func (c *Connection) writeLoop() {
 				// A failed write means the connection is gone: closing here also
 				// unblocks the reader.
 				if !errors.Is(err, context.Canceled) {
-					c.logger.Debug("cable: write failed", "error", err)
+					c.logger.Debug("coax: write failed", "error", err)
 				}
 				c.closeNow()
 				return
@@ -177,7 +177,7 @@ func (c *Connection) enqueue(out outbound) {
 	case c.send <- out:
 	case <-c.ctx.Done():
 	default:
-		c.logger.Warn("cable: send buffer full, dropping connection", "buffered", len(c.send))
+		c.logger.Warn("coax: send buffer full, dropping connection", "buffered", len(c.send))
 		c.closeNow()
 	}
 }
@@ -186,7 +186,7 @@ func (c *Connection) enqueue(out outbound) {
 func (c *Connection) transmitMessage(m serverMessage) bool {
 	frame, err := m.encode()
 	if err != nil {
-		c.logger.Error("cable: encoding outbound message", "error", err)
+		c.logger.Error("coax: encoding outbound message", "error", err)
 		return false
 	}
 	c.transmit(frame)
@@ -206,12 +206,12 @@ func (c *Connection) close(reason string, reconnect bool) {
 	c.closingOnce.Do(func() {
 		frame, err := newDisconnect(reason, reconnect).encode()
 		if err != nil {
-			c.logger.Error("cable: encoding a disconnect message", "error", err)
+			c.logger.Error("coax: encoding a disconnect message", "error", err)
 			c.closeNow()
 			return
 		}
 
-		c.logger.Debug("cable: disconnecting", "reason", reason, "reconnect", reconnect)
+		c.logger.Debug("coax: disconnecting", "reason", reason, "reconnect", reconnect)
 		c.enqueue(outbound{frame: frame, final: true})
 	})
 }
@@ -255,7 +255,7 @@ func (c *Connection) shutdown() {
 	c.closeNow()
 	c.unsubscribeAll()
 	c.unsubscribeFromInternalChannel()
-	c.logger.Debug("cable: connection finished", "duration", time.Since(c.startedAt))
+	c.logger.Debug("coax: connection finished", "duration", time.Since(c.startedAt))
 }
 
 // logClosed records why a connection ended, distinguishing the ordinary cases
@@ -263,14 +263,14 @@ func (c *Connection) shutdown() {
 func (c *Connection) logClosed(err error) {
 	switch {
 	case errors.Is(err, context.Canceled):
-		c.logger.Debug("cable: connection cancelled")
+		c.logger.Debug("coax: connection cancelled")
 	case ws.CloseStatus(err) == ws.StatusNormalClosure,
 		ws.CloseStatus(err) == ws.StatusGoingAway,
 		ws.CloseStatus(err) == ws.StatusNoStatusRcvd,
 		ws.CloseStatus(err) == ws.StatusAbnormalClosure:
-		c.logger.Debug("cable: client disconnected", "status", int(ws.CloseStatus(err)))
+		c.logger.Debug("coax: client disconnected", "status", int(ws.CloseStatus(err)))
 	default:
-		c.logger.Info("cable: connection closed", "error", err)
+		c.logger.Info("coax: connection closed", "error", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-# go-cable
+# coax
 
 A Go implementation of Action Cable — real-time channels over WebSocket, wire-compatible with
 the `@rails/actioncable` JavaScript client.
@@ -29,22 +29,22 @@ and no npm.
 ## A server
 
 ```go
-srv := cable.New(&cable.Options{
-    Authenticate: func(r *http.Request) (cable.Identifiers, error) {
+srv := coax.New(&coax.Options{
+    Authenticate: func(r *http.Request) (coax.Identifiers, error) {
         user := session(r)                       // your cookie, token, whatever
         if user == "" {
             return nil, errors.New("not signed in")   // → client is told, and stays down
         }
-        return cable.Identifiers{"user": user}, nil
+        return coax.Identifiers{"user": user}, nil
     },
 })
 defer srv.Close()
 
-srv.Register("ChatChannel", func(s *cable.Subscription) cable.Channel {
+srv.Register("ChatChannel", func(s *coax.Subscription) coax.Channel {
     return &ChatChannel{srv: srv, sub: s}
 })
 
-http.Handle(cable.DefaultMountPath, srv)          // "/cable"
+http.Handle(coax.DefaultMountPath, srv)          // "/cable"
 http.ListenAndServe(":8080", nil)
 ```
 
@@ -52,8 +52,8 @@ A channel is three methods. This one joins a room, and turns an action into a br
 
 ```go
 type ChatChannel struct {
-    srv  *cable.Server
-    sub  *cable.Subscription
+    srv  *coax.Server
+    sub  *coax.Subscription
     room string
 }
 
@@ -136,7 +136,7 @@ The default backend delivers within one process. For more than one, hand it Redi
 ps := redispubsub.New(&redispubsub.Options{Address: "localhost:6379"})
 defer ps.Close()
 
-srv := cable.New(&cable.Options{PubSub: ps})
+srv := coax.New(&coax.Options{PubSub: ps})
 ```
 
 Nothing else changes. Every process publishes to and subscribes from Redis independently, so
@@ -144,7 +144,7 @@ there is no server-to-server traffic and no need for sticky sessions. `redispubs
 accepts `redis://` and `rediss://` URLs, including the ones in a Rails `cable.yml`.
 
 `PubSub` is a three-method interface, so another backend is a small amount of code — and
-`cable/pubsubtest` is the conformance suite both built-in adapters pass, ready to point at a
+`coax/pubsubtest` is the conformance suite both built-in adapters pass, ready to point at a
 third.
 
 ## The rest of the API
@@ -156,7 +156,7 @@ sub.Periodically(time.Second, tick)          // push without being asked
 sub.Params() / sub.Identifier() / sub.ChannelName() / sub.Connection()
 
 srv.Broadcast(ctx, "chat:1", v)
-srv.Disconnect(ctx, cable.Identifiers{"user": "42"}, false)   // in every process
+srv.Disconnect(ctx, coax.Identifiers{"user": "42"}, false)   // in every process
 srv.Shutdown(ctx)                            // tell clients to reconnect, then drain
 srv.ConnectionCount()
 ```
@@ -203,10 +203,17 @@ The slow gates are opt-in through environment variables (`WS_AUTOBAHN`, `CABLE_J
 
 ## Status
 
-Complete and tested, not yet published. Before it is:
+Complete and tested. All seven planned phases are done and every claim above has a test
+behind it.
 
-- **The module path is a placeholder.** `go-cable` needs to become
-  `github.com/<you>/go-cable` — trivial now, a breaking change for importers later.
-- `ws` may deserve its own module, since it depends on nothing here.
+```
+go get github.com/igor-dmscn/coax-claude-impl
+```
 
-Go 1.26. Licence: not chosen yet.
+Outstanding before a real publish:
+
+- **A licence.** Not chosen yet.
+- `ws` may deserve its own module, since it depends on nothing here. Splitting it is
+  mechanical while nothing external imports it.
+
+Go 1.26.

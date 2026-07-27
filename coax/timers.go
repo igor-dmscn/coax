@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -33,10 +33,10 @@ import (
 // ← actioncable/lib/action_cable/channel/periodic_timers.rb
 func (s *Subscription) Periodically(interval time.Duration, f func(context.Context) error) error {
 	if interval <= 0 {
-		return fmt.Errorf("cable: Periodically needs a positive interval, got %v", interval)
+		return fmt.Errorf("coax: Periodically needs a positive interval, got %v", interval)
 	}
 	if f == nil {
-		return errors.New("cable: Periodically needs a function")
+		return errors.New("coax: Periodically needs a function")
 	}
 
 	// Derived from the connection, so a timer cannot outlive it even if the
@@ -58,7 +58,7 @@ func (s *Subscription) runTimer(ctx context.Context, interval time.Duration, f f
 			return
 		case <-ticker.C:
 			if err := f(ctx); err != nil {
-				s.conn.logger.Error("cable: periodic timer failed",
+				s.conn.logger.Error("coax: periodic timer failed",
 					"channel", s.channel, "interval", interval, "error", err)
 			}
 		}

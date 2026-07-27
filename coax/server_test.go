@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"go-cable/ws"
+	"github.com/igor-dmscn/coax-claude-impl/ws"
 )
 
 // quietOptions silences log output and speeds the heartbeat up so tests do not

@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -49,16 +49,16 @@ type ChannelFactory func(*Subscription) Channel
 // ← actioncable/lib/action_cable/connection/subscriptions.rb:22 (safe_constantize)
 func (s *Server) Register(name string, factory ChannelFactory) {
 	if name == "" {
-		panic("cable: Register with an empty channel name")
+		panic("coax: Register with an empty channel name")
 	}
 	if factory == nil {
-		panic("cable: Register(" + name + ") with a nil factory")
+		panic("coax: Register(" + name + ") with a nil factory")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, dup := s.channels[name]; dup {
-		panic("cable: channel already registered: " + name)
+		panic("coax: channel already registered: " + name)
 	}
 	s.channels[name] = factory
 }
@@ -124,7 +124,7 @@ func (s *Subscription) Connection() *Connection { return s.conn }
 func (s *Subscription) Transmit(v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("cable: transmit to %s: %w", s.channel, err)
+		return fmt.Errorf("coax: transmit to %s: %w", s.channel, err)
 	}
 	s.conn.transmitMessage(newData(s.identifier, payload))
 	return nil
@@ -137,26 +137,26 @@ func (c *Connection) addSubscription(identifier string) {
 		// Rails returns silently. The client resubscribes on reconnect and its
 		// SubscriptionGuarantor retries until confirmed, so duplicates are
 		// expected traffic rather than a fault.
-		c.logger.Debug("cable: already subscribed", "identifier", identifier)
+		c.logger.Debug("coax: already subscribed", "identifier", identifier)
 		return
 	}
 
 	params, err := decodeIdentifier(identifier)
 	if err != nil {
-		c.logger.Error("cable: could not handle subscribe command", "error", err)
+		c.logger.Error("coax: could not handle subscribe command", "error", err)
 		return
 	}
 
 	factory := c.server.channelFactory(params.Channel)
 	if factory == nil {
-		c.logger.Error("cable: subscription channel not found", "channel", params.Channel)
+		c.logger.Error("coax: subscription channel not found", "channel", params.Channel)
 		return
 	}
 
 	sub := &Subscription{conn: c, identifier: identifier, channel: params.Channel}
 	sub.impl = factory(sub)
 	if sub.impl == nil {
-		c.logger.Error("cable: channel factory returned nil", "channel", params.Channel)
+		c.logger.Error("coax: channel factory returned nil", "channel", params.Channel)
 		return
 	}
 
@@ -167,14 +167,14 @@ func (c *Connection) addSubscription(identifier string) {
 		// started is still stopped: a channel may well have opened a stream or a
 		// timer before deciding to reject, and those would otherwise run forever.
 		sub.stop()
-		c.logger.Info("cable: subscription rejected", "channel", params.Channel, "error", err)
+		c.logger.Info("coax: subscription rejected", "channel", params.Channel, "error", err)
 		c.transmitMessage(newRejectSubscription(identifier))
 		return
 	}
 
 	c.subscriptions[identifier] = sub
 	c.transmitMessage(newConfirmSubscription(identifier))
-	c.logger.Debug("cable: subscription confirmed", "channel", params.Channel)
+	c.logger.Debug("coax: subscription confirmed", "channel", params.Channel)
 }
 
 // removeSubscription handles an unsubscribe command. Nothing is sent back: the
@@ -183,7 +183,7 @@ func (c *Connection) addSubscription(identifier string) {
 func (c *Connection) removeSubscription(identifier string) {
 	sub, ok := c.subscriptions[identifier]
 	if !ok {
-		c.logger.Error("cable: unable to find subscription", "identifier", identifier)
+		c.logger.Error("coax: unable to find subscription", "identifier", identifier)
 		return
 	}
 
@@ -194,7 +194,7 @@ func (c *Connection) removeSubscription(identifier string) {
 	// ← actioncable/lib/action_cable/channel/streams.rb:74 (on_unsubscribe)
 	sub.impl.Unsubscribed(c.ctx)
 	sub.stop()
-	c.logger.Debug("cable: unsubscribed", "channel", sub.channel)
+	c.logger.Debug("coax: unsubscribed", "channel", sub.channel)
 }
 
 // performAction handles a message command by dispatching it to its subscription.
@@ -202,18 +202,18 @@ func (c *Connection) removeSubscription(identifier string) {
 func (c *Connection) performAction(cmd clientCommand) {
 	sub, ok := c.subscriptions[cmd.Identifier]
 	if !ok {
-		c.logger.Error("cable: unable to find subscription", "identifier", cmd.Identifier)
+		c.logger.Error("coax: unable to find subscription", "identifier", cmd.Identifier)
 		return
 	}
 
 	action, data, err := decodeAction(cmd.Data)
 	if err != nil {
-		c.logger.Error("cable: could not handle message command", "error", err, "channel", sub.channel)
+		c.logger.Error("coax: could not handle message command", "error", err, "channel", sub.channel)
 		return
 	}
 
 	if err := sub.impl.Perform(c.ctx, action, data); err != nil {
-		c.logger.Error("cable: action failed", "channel", sub.channel, "action", action, "error", err)
+		c.logger.Error("coax: action failed", "channel", sub.channel, "action", action, "error", err)
 	}
 }
 

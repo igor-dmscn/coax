@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -28,7 +28,7 @@ func (s *Subscription) StreamFrom(ctx context.Context, broadcasting string) erro
 
 	unsubscribe, err := s.conn.server.opts.PubSub.Subscribe(ctx, broadcasting, s.forward)
 	if err != nil {
-		return fmt.Errorf("cable: %s streaming from %q: %w", s.channel, broadcasting, err)
+		return fmt.Errorf("coax: %s streaming from %q: %w", s.channel, broadcasting, err)
 	}
 
 	if s.streams == nil {
@@ -87,7 +87,7 @@ func (s *Subscription) forward(payload []byte) {
 func (s *Server) Broadcast(ctx context.Context, broadcasting string, v any) error {
 	payload, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("cable: broadcast to %q: %w", broadcasting, err)
+		return fmt.Errorf("coax: broadcast to %q: %w", broadcasting, err)
 	}
 	return s.opts.PubSub.Broadcast(ctx, broadcasting, payload)
 }

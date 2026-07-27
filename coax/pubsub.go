@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 )
 
 // ErrPubSubClosed is returned by a PubSub whose Close has been called.
-var ErrPubSubClosed = errors.New("cable: pub/sub is closed")
+var ErrPubSubClosed = errors.New("coax: pub/sub is closed")
 
 // Handler receives one payload published to a broadcasting. Payloads are JSON,
 // and are forwarded to clients without being re-encoded.
@@ -105,7 +105,7 @@ func (m *MemoryPubSub) Broadcast(ctx context.Context, broadcasting string, paylo
 // returns once the handler is live.
 func (m *MemoryPubSub) Subscribe(ctx context.Context, broadcasting string, h Handler) (func(), error) {
 	if h == nil {
-		return nil, errors.New("cable: Subscribe with a nil handler")
+		return nil, errors.New("coax: Subscribe with a nil handler")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

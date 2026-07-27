@@ -1,4 +1,4 @@
-# go-cable Data Flows
+# coax Data Flows
 
 Every significant path through the implementation, traced call by call: what calls what, on
 which goroutine, and what happens at each step.
@@ -28,7 +28,7 @@ GET /cable  Upgrade: websocket  Sec-WebSocket-Version: 13
 
 **R** throughout. The handler never returns until the connection ends.
 
-1. `cable/server.go:ServeHTTP`
+1. `coax/server.go:ServeHTTP`
    - `isUpgrade(r)` — `GET` plus `websocket` as a token in `Upgrade`. Not an upgrade →
      `writePageNotFound` and done. Rails' exact bytes: `text/plain; charset=utf-8`,
      `Page not found`, no trailing newline.
@@ -38,12 +38,12 @@ GET /cable  Upgrade: websocket  Sec-WebSocket-Version: 13
    - `stopping()` — shutting down → `503 Server shutting down`. Without this a shutdown could
      never finish (§8).
 2. `ws.Accept(w, r, opts)` with `InsecureSkipVerify: true`, because origin was already checked
-   with cable's rules rather than `ws`'s.
+   with coax's rules rather than `ws`'s.
    - `verifyUpgrade` → `selectSubprotocol` → `Hijack()` → clear deadlines → write the 101 →
      `newConn`. Full detail in [implementation §4.1](./implementation.md#41-handshake).
    - The answer is always `actioncable-v1-json`: it is the only value the JS client accepts
      back, whatever it offered (`TestSubprotocolAlwaysActionCableV1JSON`).
-3. `cable/server.go:serve`
+3. `coax/server.go:serve`
    - `opts.Authenticate(r)` — **your code**. Cookies, headers, query. Returns `Identifiers`.
      - Error → `rejectUnauthorized(sock)`: write `{"type":"disconnect","reason":"unauthorized",
        "reconnect":false}` directly to the socket, then close. **The handshake already
@@ -95,9 +95,9 @@ ws.Conn.Read ──► readLoop ──► handleMessage ──► decodeCommand 
                                                                 └─► performAction
 ```
 
-1. `cable/conn.go:readLoop` — `c.sock.Read(c.ctx)`. An error ends the connection (§7.1). A
+1. `coax/conn.go:readLoop` — `c.sock.Read(c.ctx)`. An error ends the connection (§7.1). A
    non-text frame is logged and skipped: Action Cable is JSON over text frames.
-2. `cable/conn.go:handleMessage` → `cable/protocol.go:decodeCommand`, which validates the command
+2. `coax/conn.go:handleMessage` → `coax/protocol.go:decodeCommand`, which validates the command
    verb and requires a non-empty identifier. Failure → logged, **nothing sent**, connection
    continues. Rails answers an unintelligible command with silence, and
    `TestMalformedCommandDoesNotCloseTheConnection` pins that by reading the next heartbeat.
@@ -105,7 +105,7 @@ ws.Conn.Read ──► readLoop ──► handleMessage ──► decodeCommand 
 
 ### 2.1 `subscribe`
 
-`cable/channel.go:addSubscription`:
+`coax/channel.go:addSubscription`:
 
 ```
 already in the map?          → log debug, return          (the client's guarantor retries; expected traffic)
@@ -131,7 +131,7 @@ rejection; the difference is invisible on the wire.
 
 ### 2.2 `unsubscribe`
 
-`cable/channel.go:removeSubscription`:
+`coax/channel.go:removeSubscription`:
 
 ```
 not in the map? → log "unable to find subscription", return
@@ -147,7 +147,7 @@ goodbye over its streams.
 
 ### 2.3 `message`
 
-`cable/channel.go:performAction`:
+`coax/channel.go:performAction`:
 
 ```
 c.subscriptions[cmd.Identifier] → missing? → log, return   (silent to the client)

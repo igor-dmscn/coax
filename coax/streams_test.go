@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"go-cable/ws"
+	"github.com/igor-dmscn/coax-claude-impl/ws"
 )
 
 // streamFromRoom is a Subscribed hook that streams from the broadcasting named

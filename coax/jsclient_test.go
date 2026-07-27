@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"

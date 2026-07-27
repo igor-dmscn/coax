@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -10,15 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"go-cable/ws"
+	"github.com/igor-dmscn/coax-claude-impl/ws"
 )
 
 // Server is an Action Cable endpoint. It implements http.Handler, so it is
 // mounted like any other route:
 //
-//	srv := cable.New(&cable.Options{Authenticate: authenticate})
+//	srv := coax.New(&coax.Options{Authenticate: authenticate})
 //	defer srv.Close()
-//	http.Handle(cable.DefaultMountPath, srv)
+//	http.Handle(coax.DefaultMountPath, srv)
 //
 // A Server holds every connection made to it, in this process only. Reaching
 // connections on other processes goes through the pub/sub backend instead.
@@ -72,12 +72,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// not allowed, gets a plain 404 with no WebSocket and no disconnect message.
 	// ← actioncable/lib/action_cable/server/socket.rb:145 (respond_to_invalid_request)
 	if !isUpgrade(r) {
-		s.opts.Logger.Debug("cable: not a websocket upgrade", "path", r.URL.Path, "remote", r.RemoteAddr)
+		s.opts.Logger.Debug("coax: not a websocket upgrade", "path", r.URL.Path, "remote", r.RemoteAddr)
 		writePageNotFound(w)
 		return
 	}
 	if !s.originAllowed(r) {
-		s.opts.Logger.Warn("cable: origin not allowed", "origin", r.Header.Get("Origin"), "remote", r.RemoteAddr)
+		s.opts.Logger.Warn("coax: origin not allowed", "origin", r.Header.Get("Origin"), "remote", r.RemoteAddr)
 		writePageNotFound(w)
 		return
 	}
@@ -86,7 +86,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// never finish. Answered with a status rather than a WebSocket, since there is
 	// no point completing a handshake only to end it.
 	if s.stopping() {
-		s.opts.Logger.Debug("cable: refusing a connection during shutdown", "remote", r.RemoteAddr)
+		s.opts.Logger.Debug("coax: refusing a connection during shutdown", "remote", r.RemoteAddr)
 		writeUnavailable(w)
 		return
 	}
@@ -97,7 +97,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		s.opts.Logger.Warn("cable: handshake failed", "error", err, "remote", r.RemoteAddr)
+		s.opts.Logger.Warn("coax: handshake failed", "error", err, "remote", r.RemoteAddr)
 		return
 	}
 
@@ -114,7 +114,7 @@ func (s *Server) serve(r *http.Request, sock *ws.Conn) {
 	// ← actioncable/lib/action_cable/connection/base.rb:91 (handle_open)
 	identifiers, err := s.opts.Authenticate(r)
 	if err != nil {
-		logger.Info("cable: connection rejected", "error", err)
+		logger.Info("coax: connection rejected", "error", err)
 		rejectUnauthorized(sock)
 		return
 	}
@@ -186,7 +186,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	err := s.waitForConnections(ctx)
 	if err != nil {
-		s.opts.Logger.Warn("cable: shutdown ran out of time, dropping connections",
+		s.opts.Logger.Warn("coax: shutdown ran out of time, dropping connections",
 			"remaining", s.ConnectionCount(), "error", err)
 		for _, c := range s.snapshot(nil) {
 			c.closeNow()
@@ -310,7 +310,7 @@ func (s *Server) heartbeat() {
 		case now := <-ticker.C:
 			frame, err := newPing(now).encode()
 			if err != nil {
-				s.opts.Logger.Error("cable: encoding heartbeat", "error", err)
+				s.opts.Logger.Error("coax: encoding heartbeat", "error", err)
 				continue
 			}
 

@@ -9,7 +9,7 @@
 
 REDIS_IMAGE   ?= redis:7-alpine
 REDIS_PORT    ?= 16379
-REDIS_NAME    ?= go-cable-redis
+REDIS_NAME    ?= coax-redis
 FUZZTIME      ?= 30s
 CABLE_CONNS   ?= 10000
 
@@ -41,8 +41,8 @@ bench:
 .PHONY: fuzz
 fuzz:
 	go test ./ws/ -run '^$$' -fuzz FuzzFrameParse -fuzztime $(FUZZTIME)
-	go test ./cable/ -run '^$$' -fuzz FuzzDecodeCommand -fuzztime $(FUZZTIME)
-	go test ./cable/redispubsub/ -run '^$$' -fuzz FuzzReadValue -fuzztime $(FUZZTIME)
+	go test ./coax/ -run '^$$' -fuzz FuzzDecodeCommand -fuzztime $(FUZZTIME)
+	go test ./coax/redispubsub/ -run '^$$' -fuzz FuzzReadValue -fuzztime $(FUZZTIME)
 
 # Autobahn's fuzzing client against our server, in Docker. Writes a summary to
 # ws/testdata/autobahn/summary.json, which is committed as evidence.
@@ -54,21 +54,21 @@ autobahn:
 # first run to install it.
 .PHONY: jsclient
 jsclient:
-	CABLE_JS=1 go test ./cable/ -run TestRailsJSClient -count=1 -v -timeout 5m
+	CABLE_JS=1 go test ./coax/ -run TestRailsJSClient -count=1 -v -timeout 5m
 
 # A real Redis in Docker, started and stopped around the tests.
 .PHONY: redis
 redis:
 	docker run --rm -d --name $(REDIS_NAME) -p $(REDIS_PORT):6379 $(REDIS_IMAGE)
 	sleep 1
-	REDIS_URL=redis://127.0.0.1:$(REDIS_PORT) go test ./cable/... -count=1 -v -timeout 10m; \
+	REDIS_URL=redis://127.0.0.1:$(REDIS_PORT) go test ./coax/... -count=1 -v -timeout 10m; \
 		status=$$?; docker rm -f $(REDIS_NAME) >/dev/null; exit $$status
 
 # Tens of thousands of sockets: both ends live in this process, so it needs a
 # high file descriptor limit and a wide ephemeral port range.
 .PHONY: load
 load:
-	CABLE_LOAD=1 CABLE_CONNS=$(CABLE_CONNS) go test ./cable/ -run TestManyIdleConnections \
+	CABLE_LOAD=1 CABLE_CONNS=$(CABLE_CONNS) go test ./coax/ -run TestManyIdleConnections \
 		-count=1 -v -timeout 15m
 
 .PHONY: conformance
@@ -84,4 +84,4 @@ example:
 .PHONY: doc
 doc:
 	go doc -all ./ws
-	go doc -all ./cable
+	go doc -all ./coax

@@ -1,4 +1,4 @@
-// Package pubsubtest is a conformance suite for cable.PubSub implementations.
+// Package pubsubtest is a conformance suite for coax.PubSub implementations.
 //
 // A backend is a small interface with a large number of ways to be subtly wrong:
 // delivering to the wrong subscribers, deduplicating handlers that should each
@@ -8,7 +8,7 @@
 // the same suite the built-in ones pass:
 //
 //	func TestConformance(t *testing.T) {
-//		pubsubtest.Run(t, func(t *testing.T) cable.PubSub {
+//		pubsubtest.Run(t, func(t *testing.T) coax.PubSub {
 //			ps := myadapter.New(...)
 //			t.Cleanup(func() { ps.Close() })
 //			return ps
@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"go-cable/cable"
+	"github.com/igor-dmscn/coax-claude-impl/coax"
 )
 
 // deliveryTimeout is how long an assertion waits for a payload that should
@@ -39,13 +39,13 @@ const quietPeriod = 250 * time.Millisecond
 
 // Factory builds a PubSub for one subtest. It is called once per subtest and is
 // responsible for cleaning up, normally with t.Cleanup.
-type Factory func(*testing.T) cable.PubSub
+type Factory func(*testing.T) coax.PubSub
 
 // Run checks an implementation against the PubSub contract.
 func Run(t *testing.T, newPubSub Factory) {
 	t.Helper()
 
-	tests := map[string]func(*testing.T, cable.PubSub){
+	tests := map[string]func(*testing.T, coax.PubSub){
 		"Delivers":                  testDelivers,
 		"DeliversImmediately":       testDeliversImmediately,
 		"IsolatesBroadcastings":     testIsolatesBroadcastings,
@@ -65,7 +65,7 @@ func Run(t *testing.T, newPubSub Factory) {
 	}
 }
 
-func testDelivers(t *testing.T, ps cable.PubSub) {
+func testDelivers(t *testing.T, ps coax.PubSub) {
 	got := subscribe(t, ps, "room_1")
 	broadcast(t, ps, "room_1", `{"body":"hello"}`)
 	got.expect(t, `{"body":"hello"}`)
@@ -75,7 +75,7 @@ func testDelivers(t *testing.T, ps cable.PubSub) {
 // the moment Subscribe returns: a payload broadcast in the very next statement
 // must not be lost, which means Subscribe cannot return before the backend is
 // really listening.
-func testDeliversImmediately(t *testing.T, ps cable.PubSub) {
+func testDeliversImmediately(t *testing.T, ps coax.PubSub) {
 	got := subscribe(t, ps, "room_1")
 
 	// No sleep, no retry: if Subscribe returned early, this payload is gone.
@@ -83,7 +83,7 @@ func testDeliversImmediately(t *testing.T, ps cable.PubSub) {
 	got.expect(t, `1`)
 }
 
-func testIsolatesBroadcastings(t *testing.T, ps cable.PubSub) {
+func testIsolatesBroadcastings(t *testing.T, ps coax.PubSub) {
 	got := subscribe(t, ps, "room_1")
 	other := subscribe(t, ps, "room_2")
 
@@ -96,7 +96,7 @@ func testIsolatesBroadcastings(t *testing.T, ps cable.PubSub) {
 // testDeliversToEverySubscriber pins that subscribers are counted, not
 // deduplicated: two subscriptions on one broadcasting each get a copy, even with
 // identical behaviour.
-func testDeliversToEverySubscriber(t *testing.T, ps cable.PubSub) {
+func testDeliversToEverySubscriber(t *testing.T, ps coax.PubSub) {
 	first := subscribe(t, ps, "room_1")
 	second := subscribe(t, ps, "room_1")
 
@@ -108,7 +108,7 @@ func testDeliversToEverySubscriber(t *testing.T, ps cable.PubSub) {
 
 // testKeepsPayloadsIntact: payloads are opaque bytes. JSON today, but an adapter
 // that assumes text, re-encodes, or truncates at a NUL is broken.
-func testKeepsPayloadsIntact(t *testing.T, ps cable.PubSub) {
+func testKeepsPayloadsIntact(t *testing.T, ps coax.PubSub) {
 	payloads := map[string]string{
 		"empty":        "",
 		"binary":       "\x00\x01\xff\xfe",
@@ -126,7 +126,7 @@ func testKeepsPayloadsIntact(t *testing.T, ps cable.PubSub) {
 	}
 }
 
-func testUnsubscribes(t *testing.T, ps cable.PubSub) {
+func testUnsubscribes(t *testing.T, ps coax.PubSub) {
 	got := subscribe(t, ps, "room_1")
 	got.unsubscribe()
 
@@ -134,7 +134,7 @@ func testUnsubscribes(t *testing.T, ps cable.PubSub) {
 	got.expectNothing(t)
 }
 
-func testUnsubscribeIsIdempotent(t *testing.T, ps cable.PubSub) {
+func testUnsubscribeIsIdempotent(t *testing.T, ps coax.PubSub) {
 	got := subscribe(t, ps, "room_1")
 
 	// Teardown paths race, so this happens for real.
@@ -145,7 +145,7 @@ func testUnsubscribeIsIdempotent(t *testing.T, ps cable.PubSub) {
 	got.expectNothing(t)
 }
 
-func testUnsubscribeLeavesSiblings(t *testing.T, ps cable.PubSub) {
+func testUnsubscribeLeavesSiblings(t *testing.T, ps coax.PubSub) {
 	leaving := subscribe(t, ps, "room_1")
 	staying := subscribe(t, ps, "room_1")
 
@@ -156,7 +156,7 @@ func testUnsubscribeLeavesSiblings(t *testing.T, ps cable.PubSub) {
 	leaving.expectNothing(t)
 }
 
-func testRefusesUseAfterClose(t *testing.T, ps cable.PubSub) {
+func testRefusesUseAfterClose(t *testing.T, ps coax.PubSub) {
 	if err := ps.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -166,15 +166,15 @@ func testRefusesUseAfterClose(t *testing.T, ps cable.PubSub) {
 	}
 
 	ctx := context.Background()
-	if err := ps.Broadcast(ctx, "room_1", []byte(`1`)); !errors.Is(err, cable.ErrPubSubClosed) {
-		t.Errorf("Broadcast() after Close = %v, want %v", err, cable.ErrPubSubClosed)
+	if err := ps.Broadcast(ctx, "room_1", []byte(`1`)); !errors.Is(err, coax.ErrPubSubClosed) {
+		t.Errorf("Broadcast() after Close = %v, want %v", err, coax.ErrPubSubClosed)
 	}
-	if _, err := ps.Subscribe(ctx, "room_1", func([]byte) {}); !errors.Is(err, cable.ErrPubSubClosed) {
-		t.Errorf("Subscribe() after Close = %v, want %v", err, cable.ErrPubSubClosed)
+	if _, err := ps.Subscribe(ctx, "room_1", func([]byte) {}); !errors.Is(err, coax.ErrPubSubClosed) {
+		t.Errorf("Subscribe() after Close = %v, want %v", err, coax.ErrPubSubClosed)
 	}
 }
 
-func testSurvivesConcurrentUse(t *testing.T, ps cable.PubSub) {
+func testSurvivesConcurrentUse(t *testing.T, ps coax.PubSub) {
 	ctx := context.Background()
 
 	var wg sync.WaitGroup
@@ -210,7 +210,7 @@ type subscription struct {
 }
 
 // subscribe registers a subscriber that records what it receives.
-func subscribe(t *testing.T, ps cable.PubSub, broadcasting string) *subscription {
+func subscribe(t *testing.T, ps coax.PubSub, broadcasting string) *subscription {
 	t.Helper()
 
 	s := &subscription{payloads: make(chan string, 64)}
@@ -236,7 +236,7 @@ func subscribe(t *testing.T, ps cable.PubSub, broadcasting string) *subscription
 	return s
 }
 
-func broadcast(t *testing.T, ps cable.PubSub, broadcasting, payload string) {
+func broadcast(t *testing.T, ps coax.PubSub, broadcasting, payload string) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), deliveryTimeout)

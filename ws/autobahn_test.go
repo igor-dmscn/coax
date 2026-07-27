@@ -132,7 +132,7 @@ func writeAutobahnConfig(t *testing.T, addr string) string {
 	config := map[string]any{
 		"outdir": "/reports",
 		"servers": []map[string]string{
-			{"agent": "go-cable/ws", "url": "ws://" + addr},
+			{"agent": "github.com/igor-dmscn/coax-claude-impl/ws", "url": "ws://" + addr},
 		},
 		"cases":         []string{"*"},
 		"exclude-cases": excludedCases,

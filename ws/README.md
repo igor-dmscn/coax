@@ -8,13 +8,13 @@ A minimal WebSocket implementation (RFC 6455) for Go servers and clients.
 - **Zero allocations** on the streaming read and write paths, asserted in tests
   rather than claimed in a README.
 
-It lives in the go-cable repository because that is what it was written for, but
+It lives in the coax repository because that is what it was written for, but
 it imports nothing from it and is usable on its own.
 
 ## Install
 
 ```
-go get go-cable/ws
+go get github.com/igor-dmscn/coax-claude-impl/ws
 ```
 
 ## Server

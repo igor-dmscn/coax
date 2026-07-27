@@ -1,4 +1,4 @@
-# go-cable Internals
+# coax Internals
 
 How this implementation actually works: package graph, goroutine model, ownership rules, and
 the mechanics of each layer.
@@ -7,7 +7,7 @@ The companion to [action-cable-internals](./action-cable-internals.md), which do
 Ruby original. Where behaviour differs, §11 says so and why. Flows are traced call by call in
 [flows](./flows.md); the wire format is in [protocol](./action-cable-protocol.md).
 
-**Reference convention:** `cable/conn.go:writeLoop` means the `writeLoop` function in that
+**Reference convention:** `coax/conn.go:writeLoop` means the `writeLoop` function in that
 file. Symbols rather than line numbers, because line numbers rot and symbol names are
 greppable. References to Rails source keep the `file.rb:line` form, pinned to the commit
 named in the companion doc.
@@ -21,9 +21,9 @@ Three packages, one direction of dependency. Nothing points back up.
 ```
 your application
 │
-├─ cable.Server                             an http.Handler, mounted at /cable
+├─ coax.Server                             an http.Handler, mounted at /cable
 │  │
-│  ├─ cable.Connection                      one per socket: identity, dispatch, queue
+│  ├─ coax.Connection                      one per socket: identity, dispatch, queue
 │  │  ├─ map[string]*Subscription           keyed by the client's raw identifier
 │  │  │  └─ Subscription
 │  │  │     ├─ Channel (your code)          Subscribed / Unsubscribed / Perform
@@ -31,13 +31,13 @@ your application
 │  │  │     └─ stopTimers []func()          periodic timers
 │  │  └─ internal channel subscription      action_cable/<identity>
 │  │
-│  ├─ cable.PubSub                          the one interface: 3 methods
-│  │  ├─ cable.MemoryPubSub                 default; one process
+│  ├─ coax.PubSub                          the one interface: 3 methods
+│  │  ├─ coax.MemoryPubSub                 default; one process
 │  │  └─ redispubsub.PubSub                 RESP2 over two TCP connections
 │  │
-│  └─ ws.Conn                               ← the only thing cable knows about transport
+│  └─ ws.Conn                               ← the only thing coax knows about transport
 │
-└─ ws                                       standalone RFC 6455 library, imports no cable
+└─ ws                                       standalone RFC 6455 library, imports no coax
    ├─ Accept / Dial                         handshake, hijack, 101
    ├─ Conn                                  read/write state machines, close bookkeeping
    ├─ frameHeader                           parse/serialise, validate
@@ -46,13 +46,13 @@ your application
    └─ mask                                  word-at-a-time XOR
 ```
 
-`cable` touches the transport through five methods on a connection — `Read`, `Write`, `Close`,
+`coax` touches the transport through five methods on a connection — `Read`, `Write`, `Close`,
 `CloseSend`, `CloseNow` — plus `ws.Accept` to obtain one and `ws.CloseStatus` to classify why a
 read ended. That is the whole contract, which is what makes `ws` publishable on its own and
 would make an alternative transport a contained change.
 
 `Close` (the full handshake, which reads) appears exactly once, in
-`cable/server.go:rejectUnauthorized`: authentication runs before the reader goroutine exists, so
+`coax/server.go:rejectUnauthorized`: authentication runs before the reader goroutine exists, so
 that is the only moment where nothing else owns reads. Everywhere else a connection ends through
 `CloseSend` or `CloseNow`, which do not read.
 
@@ -108,14 +108,14 @@ Two per connection, not three: the HTTP handler goroutine *is* the reader, so hi
 connection costs nothing extra and the handler naturally lives as long as the socket.
 
 Measured at 10,000 idle connections: 2.0 goroutines per connection, ~40 KB RSS each with both
-ends of every connection in one process (`cable/load_test.go:TestManyIdleConnections`).
+ends of every connection in one process (`coax/load_test.go:TestManyIdleConnections`).
 
 ### Ownership rules
 
 These are the invariants the whole design rests on. Breaking one is how a data race gets in.
 
 1. **One reader, one writer, per socket.** `ws.Conn` does not lock reads against reads or
-   writes against the read path; it assumes at most one goroutine on each side. `cable`
+   writes against the read path; it assumes at most one goroutine on each side. `coax`
    satisfies this by construction: the handler reads, `writeLoop` writes.
 2. **Everything reachable from a `Subscription` belongs to the reader goroutine.** The
    subscriptions map, `streams`, `stopTimers`, and the `Channel` you wrote. This is why none
@@ -125,7 +125,7 @@ These are the invariants the whole design rests on. Breaking one is how a data r
    from a periodic timer or a pub/sub handler.
 4. **A `Handler` must not call back into its `PubSub`.** `MemoryPubSub` delivers while holding
    its read lock, so re-entering would deadlock. The framework's own handler
-   (`cable/streams.go:forward`) only queues a frame.
+   (`coax/streams.go:forward`) only queues a frame.
 5. **A `PubSub` implementation must not return from `Subscribe` before the backend has
    acknowledged.** Everything in §6.1 depends on it.
 6. **Nothing writes to a `ws.Conn` after `CloseNow`/`CloseSend`.** Both record a terminal
@@ -166,7 +166,7 @@ per-connection ordering automatic and removes the need for a lock on connection 
 needs its worker pool because Ruby threads are expensive; a goroutine per connection is not.
 The cost is that a slow `Perform` blocks that one connection's reader — and only that one.
 
-**The queue is bounded, and full means gone.** `cable/conn.go:enqueue`:
+**The queue is bounded, and full means gone.** `coax/conn.go:enqueue`:
 
 ```go
 select {
@@ -296,7 +296,7 @@ and `utf8.DecodeRune` to reject overlong encodings, surrogates, and out-of-range
 
 ## 5. The protocol layer
 
-`cable/protocol.go` is the whole wire format and nothing else: no I/O, no state. That is what
+`coax/protocol.go` is the whole wire format and nothing else: no I/O, no state. That is what
 makes it golden-testable byte for byte (`protocol_test.go`) and fuzzable
 (`FuzzDecodeCommand`).
 
@@ -346,7 +346,7 @@ The one interface in the package, because it has real alternate implementations.
 beyond the signatures: `Subscribe` blocks until acknowledged; `unsubscribe` is idempotent and
 safe after `Close`; `Broadcast` publishes rather than delivering locally, so a process receives
 its own broadcasts back through the backend; after `Close`, both return `ErrPubSubClosed`.
-`cable/pubsubtest` checks all of it, and both adapters run it.
+`coax/pubsubtest` checks all of it, and both adapters run it.
 
 ### 6.1 Why `Subscribe` blocks
 
@@ -430,7 +430,7 @@ string per reply and to reject anything Redis would never send.
 ## 7. The internal channel
 
 Each identified connection subscribes to a broadcasting derived from its own identifiers, so
-any process can reach it (`cable/internal.go`).
+any process can reach it (`coax/internal.go`).
 
 ```
 Identifiers{"current_user": "42", "tenant": "acme"}
@@ -477,7 +477,7 @@ has stopped reading cannot hold a deployment open.
 
 ## 9. Configuration surface
 
-`cable.Options` — the zero value is usable and accepts every same-origin connection with no
+`coax.Options` — the zero value is usable and accepts every same-origin connection with no
 identifiers.
 
 | Field | Default | Notes |
@@ -548,11 +548,11 @@ The claims this implementation makes, and the thing that would catch a regressio
 | Claim | Evidence |
 |---|---|
 | RFC 6455 conformance | Autobahn 301/301, report committed to `ws/testdata/autobahn/` |
-| Compatible with the real client | `cable/jsclient_test.go` drives unmodified `@rails/actioncable` under Node: connect, confirm, reject, perform, broadcast to two clients, both `reconnect` values |
+| Compatible with the real client | `coax/jsclient_test.go` drives unmodified `@rails/actioncable` under Node: connect, confirm, reject, perform, broadcast to two clients, both `reconnect` values |
 | Zero-allocation streaming | `ws/alloc_test.go`, `testing.AllocsPerRun` == 0 |
 | No parser panics on hostile input | `FuzzFrameParse`, `FuzzDecodeCommand`, `FuzzReadValue` |
 | Wire format matches Rails | golden byte tests in `protocol_test.go`; `TestRedisEndToEnd` publishes Rails' exact shape and compares the delivered frame byte for byte |
-| Backends behave identically | `cable/pubsubtest` run against both |
+| Backends behave identically | `coax/pubsubtest` run against both |
 | Redis survives failover | `TestRedisResubscribesAfterAKilledConnection` uses `CLIENT KILL TYPE pubsub` |
 | No goroutine leaks | `runtime.NumGoroutine` with a stabilising retry loop, in connection, timer and load tests |
 | Scales to 10k connections | `TestManyIdleConnections`: sweep 27.9ms median, 154µs of it ours |

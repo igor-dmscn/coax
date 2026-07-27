@@ -1,4 +1,4 @@
-// Command example is a chat server built on the cable package, small enough to
+// Command example is a chat server built on the coax package, small enough to
 // read in one sitting and complete enough to use:
 //
 //	go run ./cmd/example
@@ -27,8 +27,8 @@ import (
 	"syscall"
 	"time"
 
-	"go-cable/cable"
-	"go-cable/cable/redispubsub"
+	"github.com/igor-dmscn/coax-claude-impl/coax"
+	"github.com/igor-dmscn/coax-claude-impl/coax/redispubsub"
 )
 
 func main() {
@@ -48,21 +48,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := cable.New(&cable.Options{
+	srv := coax.New(&coax.Options{
 		Logger:       logger,
 		PubSub:       pubsub,
 		Authenticate: authenticate,
 	})
 
-	srv.Register("ChatChannel", func(s *cable.Subscription) cable.Channel {
+	srv.Register("ChatChannel", func(s *coax.Subscription) coax.Channel {
 		return &chatChannel{server: srv, sub: s}
 	})
-	srv.Register("ClockChannel", func(s *cable.Subscription) cable.Channel {
+	srv.Register("ClockChannel", func(s *coax.Subscription) coax.Channel {
 		return &clockChannel{sub: s}
 	})
 
 	mux := http.NewServeMux()
-	mux.Handle(cable.DefaultMountPath, srv)
+	mux.Handle(coax.DefaultMountPath, srv)
 	mux.HandleFunc("/", index)
 
 	server := &http.Server{Addr: *addr, Handler: mux}
@@ -88,7 +88,7 @@ func main() {
 		}
 	}()
 
-	logger.Info("listening", "addr", *addr, "cable", cable.DefaultMountPath)
+	logger.Info("listening", "addr", *addr, "cable", coax.DefaultMountPath)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
@@ -97,11 +97,11 @@ func main() {
 
 // backend uses Redis when REDIS_URL is set and memory otherwise. Swapping them is
 // the whole point of the PubSub interface: nothing else in this file changes.
-func backend(logger *slog.Logger) (cable.PubSub, error) {
+func backend(logger *slog.Logger) (coax.PubSub, error) {
 	url := os.Getenv("REDIS_URL")
 	if url == "" {
 		logger.Info("using the in-memory backend: broadcasts reach this process only")
-		return cable.NewMemoryPubSub(), nil
+		return coax.NewMemoryPubSub(), nil
 	}
 
 	opts, err := redispubsub.ParseURL(url)
@@ -118,20 +118,20 @@ func backend(logger *slog.Logger) (cable.PubSub, error) {
 // for whatever a real application uses — a session cookie, a bearer token, a
 // signed URL. Returning an error rejects the connection with a disconnect message
 // telling the client not to come back.
-func authenticate(r *http.Request) (cable.Identifiers, error) {
+func authenticate(r *http.Request) (coax.Identifiers, error) {
 	name := r.URL.Query().Get("user")
 	if name == "" {
 		return nil, errors.New("no user")
 	}
-	return cable.Identifiers{"user": name}, nil
+	return coax.Identifiers{"user": name}, nil
 }
 
 // chatChannel streams a room and turns a spoken message into a broadcast, so every
 // client in that room hears it — including those on other processes when Redis is
 // the backend.
 type chatChannel struct {
-	server *cable.Server
-	sub    *cable.Subscription
+	server *coax.Server
+	sub    *coax.Subscription
 	room   string
 }
 
@@ -173,7 +173,7 @@ func (c *chatChannel) Perform(ctx context.Context, action string, data json.RawM
 }
 
 // clockChannel pushes without being asked, which is what periodic timers are for.
-type clockChannel struct{ sub *cable.Subscription }
+type clockChannel struct{ sub *coax.Subscription }
 
 func (c *clockChannel) Subscribed(context.Context) error {
 	return c.sub.Periodically(time.Second, func(context.Context) error {
@@ -201,14 +201,14 @@ func index(w http.ResponseWriter, r *http.Request) {
 // in the handshake, and identifier being a JSON *string* holding JSON, echoed back
 // exactly as it was sent.
 const page = `<!doctype html>
-<title>go-cable example</title>
+<title>coax example</title>
 <style>
  body { font: 14px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem }
  #log { border: 1px solid #ccc; padding: .5rem; height: 16rem; overflow-y: auto; white-space: pre-wrap }
  input, button { font: inherit; padding: .3rem }
  .meta { color: #888 }
 </style>
-<h1>go-cable</h1>
+<h1>coax</h1>
 <p>User <input id="user" value="alice" size="8"> in room <input id="room" value="1" size="4">
 <button id="connect">connect</button> <span id="clock" class="meta"></span>
 <div id="log"></div>

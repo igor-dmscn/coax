@@ -98,7 +98,7 @@ type Options struct {
 //
 // A database number is accepted and ignored: Redis pub/sub is not scoped to a
 // database, so subscribers on db 0 receive what was published on db 5. Rails'
-// cable.yml URLs therefore work unchanged, including the database they usually
+// coax.yml URLs therefore work unchanged, including the database they usually
 // carry.
 func ParseURL(raw string) (*Options, error) {
 	u, err := url.Parse(raw)

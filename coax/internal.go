@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -71,7 +71,7 @@ func internalChannelFor(ids Identifiers) string {
 // process and in every other process sharing the pub/sub backend. It is how an
 // application drops a user it has just banned, logged out, or deleted:
 //
-//	srv.Disconnect(ctx, cable.Identifiers{"current_user": "42"}, false)
+//	srv.Disconnect(ctx, coax.Identifiers{"current_user": "42"}, false)
 //
 // reconnect false tells the client to stay down; true lets it come back, which is
 // what a rebalance or a forced re-authentication wants.
@@ -90,12 +90,12 @@ func internalChannelFor(ids Identifiers) string {
 func (s *Server) Disconnect(ctx context.Context, ids Identifiers, reconnect bool) error {
 	channel := internalChannelFor(ids)
 	if channel == "" {
-		return errors.New("cable: Disconnect needs at least one identifier")
+		return errors.New("coax: Disconnect needs at least one identifier")
 	}
 
 	payload, err := json.Marshal(internalMessage{Type: typeDisconnect, Reconnect: &reconnect})
 	if err != nil {
-		return fmt.Errorf("cable: encoding a remote disconnect: %w", err)
+		return fmt.Errorf("coax: encoding a remote disconnect: %w", err)
 	}
 	return s.opts.PubSub.Broadcast(ctx, channel, payload)
 }
@@ -118,12 +118,12 @@ func (c *Connection) subscribeToInternalChannel() {
 
 	unsubscribe, err := c.server.opts.PubSub.Subscribe(ctx, channel, c.handleInternalMessage)
 	if err != nil {
-		c.logger.Warn("cable: connection cannot be reached remotely", "channel", channel, "error", err)
+		c.logger.Warn("coax: connection cannot be reached remotely", "channel", channel, "error", err)
 		return
 	}
 
 	c.stopInternalChannel = unsubscribe
-	c.logger.Debug("cable: registered connection", "channel", channel)
+	c.logger.Debug("coax: registered connection", "channel", channel)
 }
 
 // unsubscribeFromInternalChannel is called once the connection is finished.
@@ -140,17 +140,17 @@ func (c *Connection) unsubscribeFromInternalChannel() {
 func (c *Connection) handleInternalMessage(payload []byte) {
 	var m internalMessage
 	if err := json.Unmarshal(payload, &m); err != nil {
-		c.logger.Error("cable: could not handle an internal message", "error", err)
+		c.logger.Error("coax: could not handle an internal message", "error", err)
 		return
 	}
 
 	if m.Type != typeDisconnect {
-		c.logger.Debug("cable: ignoring an internal message", "type", m.Type)
+		c.logger.Debug("coax: ignoring an internal message", "type", m.Type)
 		return
 	}
 
 	// Absent means reconnect: only an explicit false keeps a client down.
 	reconnect := m.Reconnect == nil || *m.Reconnect
-	c.logger.Info("cable: removing connection", "reconnect", reconnect)
+	c.logger.Info("coax: removing connection", "reconnect", reconnect)
 	c.close(reasonRemote, reconnect)
 }

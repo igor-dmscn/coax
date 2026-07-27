@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"go-cable/ws"
+	"github.com/igor-dmscn/coax-claude-impl/ws"
 )
 
 // recorder collects channel callbacks so a test can assert on them, and lets a

@@ -6,7 +6,7 @@
 // unsubscribe, message) and servers reply with typed control messages plus
 // application data addressed to a subscription identifier. See
 // docs/action-cable-protocol.md for the full wire reference.
-package cable
+package coax
 
 import (
 	"encoding/json"
@@ -74,10 +74,10 @@ const (
 // expected to log and continue rather than to reply.
 // ← actioncable/lib/action_cable/connection/subscriptions.rb:15-51
 var (
-	errMalformedCommand  = errors.New("cable: malformed command")
-	errUnknownCommand    = errors.New("cable: unknown command")
-	errMissingIdentifier = errors.New("cable: missing identifier")
-	errMissingChannel    = errors.New("cable: identifier has no channel")
+	errMalformedCommand  = errors.New("coax: malformed command")
+	errUnknownCommand    = errors.New("coax: unknown command")
+	errMissingIdentifier = errors.New("coax: missing identifier")
+	errMissingChannel    = errors.New("coax: identifier has no channel")
 )
 
 // clientCommand is a message received from a client.
@@ -171,7 +171,7 @@ func newData(identifier string, payload json.RawMessage) serverMessage {
 func (m serverMessage) encode() ([]byte, error) {
 	b, err := json.Marshal(m)
 	if err != nil {
-		return nil, fmt.Errorf("cable: encode %q message: %w", m.Type, err)
+		return nil, fmt.Errorf("coax: encode %q message: %w", m.Type, err)
 	}
 	return b, nil
 }

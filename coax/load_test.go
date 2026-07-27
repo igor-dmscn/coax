@@ -1,4 +1,4 @@
-package cable
+package coax
 
 import (
 	"bufio"
@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"go-cable/ws"
+	"github.com/igor-dmscn/coax-claude-impl/ws"
 )
 
 // TestManyIdleConnections is the measurement this port exists for: how much a

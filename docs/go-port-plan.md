@@ -37,8 +37,8 @@ Three goals, in tension, and how they're resolved:
 
 Not a style essay — the specific things that get reviewed:
 
-- Package names are short, lowercase, no stutter: `ws.Conn`, `ws.Accept`, `cable.Server` — never
-  `ws.WSConn` or `cable.CableServer`.
+- Package names are short, lowercase, no stutter: `ws.Conn`, `ws.Accept`, `coax.Server` — never
+  `ws.WSConn` or `coax.CableServer`.
 - `context.Context` is the first parameter of anything that blocks or does I/O.
 - Accept interfaces, return concrete types. `PubSub` is the one interface we define, because it
   has real alternate implementations — no single-implementation interfaces anywhere else.
@@ -61,9 +61,9 @@ Not a style essay — the specific things that get reviewed:
 You want it usable by other projects, which changes three things versus my earlier
 `internal/ws` sketch:
 
-- **Not `internal/`, and not under `cable/`.** Import path is `<module>/ws`, a peer of `cable/`,
+- **Not `internal/`, and not under `coax/`.** Import path is `<module>/ws`, a peer of `coax/`,
   so it reads as a library rather than a detail. Go compiles per package, so importing
-  `<module>/ws` pulls in none of the cable framework — a single module already gives us
+  `<module>/ws` pulls in none of the coax framework — a single module already gives us
   "independently usable" at zero tooling cost. Promoting it to its own module or repo later is a
   mechanical move; doing it now buys nothing and costs `go work` friction.
 - **API designed on its own merits**, and it should look like what Go WebSocket libraries have
@@ -75,8 +75,8 @@ You want it usable by other projects, which changes three things versus my earli
 - **Its own README, `doc.go`, runnable examples, and the committed Autobahn report** as evidence.
   A WebSocket library without a conformance report is not a credible publish.
 
-> Module path: `go-cable` is a placeholder. Set the real one (`github.com/<you>/go-cable`)
-> before the first publish — trivial now, a breaking change for importers later.
+> Module path: **set** — `github.com/igor-dmscn/coax-claude-impl`. The framework package is `coax`, a peer of
+> `ws/`, so the layered structure stays visible: `coax` imports `ws`, never the reverse.
 
 ### 1c. Zero-allocation discipline (`ws`)
 
@@ -123,8 +123,8 @@ if allocs != 0 { t.Fatalf("got %v allocs/op, want 0", allocs) }
 Plus `-benchmem` benchmarks for the absolute numbers, and `go build -gcflags=-m` review whenever
 something escapes unexpectedly.
 
-**Honest scope limit:** this is a property of `ws`, not of the whole cable path. `encoding/json`
-allocates, so `cable` will allocate per message regardless. The related win available there is
+**Honest scope limit:** this is a property of `ws`, not of the whole coax path. `encoding/json`
+allocates, so `coax` will allocate per message regardless. The related win available there is
 different in kind: **marshal a broadcast once and share the `[]byte` across all N subscribers**
 (Rails does the same — `Broadcaster` encodes once), and write per-connection frames through a
 `json.Encoder` over a pooled `bytes.Buffer`. Stated so "zero alloc" isn't read as end-to-end.
@@ -168,28 +168,30 @@ Rough size: ~1,300 LOC core + ~700 WebSocket + ~250 Redis. Ruby's actioncable `l
 ## 2. Package layout
 
 ```
-ws/                        standalone WebSocket library (§1b) — no cable imports
+ws/                        standalone WebSocket library (§1b) — no coax imports
   doc.go  accept.go  dial.go  conn.go  frame.go  mask.go  close.go  utf8.go
   example_test.go  frame_fuzz_test.go  README.md
   testdata/autobahn/       committed conformance report
 
-cable/                     the Action Cable framework — imports ws/
+coax/                      the Action Cable framework — imports ws/
   server.go        Server: http.Handler, registry, heartbeat, shutdown
   conn.go          Connection: reader/writer goroutines, transmit, close
   protocol.go      frame types, message-type constants, encode/decode
-  subscription.go  Subscription + per-connection identifier map
-  channel.go       Channel interface, registry, action dispatch
-  streams.go       StreamFrom/StopStream, default handler
+  channel.go       Channel interface, registry, Subscription, action dispatch
+  streams.go       StreamFrom/StopStream, default handler, Server.Broadcast
+  timers.go        Periodically, and the one place a subscription is released
   pubsub.go        PubSub interface + in-memory implementation
   internal.go      internal channel + remote disconnect
-  options.go       Options / functional options
+  options.go       Options
+  ↳ built as planned, except that Subscription lives in channel.go rather than its
+    own file, and timers.go was not foreseen
 
-cable/pubsubtest/          reusable conformance harness: pubsubtest.Run(t, factory)
-cable/redispubsub/         hand-rolled RESP2 adapter
+coax/pubsubtest/          reusable conformance harness: pubsubtest.Run(t, factory)
+coax/redispubsub/         hand-rolled RESP2 adapter
 cmd/example/               demo server driven by the conformance tests
 ```
 
-Dependency direction is one-way: `cable` imports `ws`, never the reverse. `pubsubtest` exists so
+Dependency direction is one-way: `coax` imports `ws`, never the reverse. `pubsubtest` exists so
 a third-party adapter — ours or someone else's — can prove itself against the same suite the
 built-in ones pass. It's the tests we're writing anyway, parameterized over a constructor.
 
@@ -262,7 +264,7 @@ type Channel interface {
     Perform(ctx context.Context, action string, data json.RawMessage) error
 }
 
-srv.Register("ChatChannel", func(s *cable.Subscription) cable.Channel {
+srv.Register("ChatChannel", func(s *coax.Subscription) coax.Channel {
     return &ChatChannel{sub: s}
 })
 
@@ -310,13 +312,13 @@ Phase 5 ✅ (real Redis 7 + 8, CLIENT KILL recovery, 2.1M fuzz execs) ·
 Phase 6 ✅ (JS client honours both reconnect values; remote disconnect across two servers on real
 Redis) · Phase 7 ✅ (timers leak-free; 10k connections measured) — **all phases done**.
 
-Everything the plan set out is built and verified. What was added beyond it: `cable/pubsubtest`
+Everything the plan set out is built and verified. What was added beyond it: `coax/pubsubtest`
 (§2 listed it, no phase owned it), `cmd/example`, a `Makefile` for the slow gates, and
 `ws.CloseSend`. What was left out is in §9, each with its workaround.
 
 **Deviations from the phase-5 plan, both deliberate:**
 
-- **`cable/pubsubtest` was built here, not left for later.** A conformance suite is worth
+- **`coax/pubsubtest` was built here, not left for later.** A conformance suite is worth
   writing when the second implementation appears, and the Redis adapter passing the exact suite
   the in-memory one passes is stronger evidence than any adapter-specific test.
 - **No Rails process in the interop test.** Rails' Redis contract is `PUBLISH <broadcasting>
@@ -332,7 +334,7 @@ including double-encoded `identifier`/`data` and the absent-`action` case.
 
 ### Phase 1 — the `ws` library (RFC 6455)
 Shipped as a standalone library per §1b, so it gets its own API review, README, `doc.go`, and
-runnable examples — not just enough surface for `cable` to work.
+runnable examples — not just enough surface for `coax` to work.
 
 Handshake (`base64(sha1(key+GUID))`, header validation, subprotocol selection, `http.Hijacker`,
 hand-written 101). Framing: FIN/RSV/opcode, MASK, 7/16/64-bit length, XOR unmask, unmasked server
@@ -394,7 +396,7 @@ close with reason `remote`; `RemoteConnections().Disconnect()`; graceful shutdow
 B. `SIGTERM` ⇒ every JS client logs `server_restart` and reconnects.
 
 **Done, with one substitution.** Both criteria are covered:
-`TestRedisRemoteDisconnect` runs two `cable.Server`s with separate Redis connections, sharing
+`TestRedisRemoteDisconnect` runs two `coax.Server`s with separate Redis connections, sharing
 nothing else, and disconnects a user on the one that never held them. For the second, the JS test
 asserts through the client's own `disconnected({willAttemptReconnect})` callback — `false` after a
 remote disconnect, `true` after a shutdown — rather than sending an actual `SIGTERM`, which would
@@ -405,7 +407,7 @@ Also needed a small addition to `ws`: `CloseSend`. `Close` completes the close h
 reads, so it cannot be called while the reader goroutine owns reads — leaving only `CloseNow`,
 which tells the peer nothing and surfaces in the browser as an `onerror`. `CloseSend` writes the
 close frame and closes without waiting for the answer. This is a real gap in a library that
-documents single-reader semantics, not a concession to cable (§1b), and Autobahn stayed 301/301.
+documents single-reader semantics, not a concession to coax (§1b), and Autobahn stayed 301/301.
 
 ### Phase 7 — periodic timers + hardening
 `Periodically` as a ticker goroutine bound to the subscription context.
@@ -547,7 +549,7 @@ workaround today:
 - **Masking in assembly** (amd64/arm64), the way `coder/websocket` does it. Only if a benchmark
   says the pure-Go word-wise mask is the bottleneck. The pure-Go path stays as the reference
   implementation, with a differential test asserting the two agree on random inputs.
-- Rails-compat package (`cable/railscompat`): cookie decryption, `cable.yml`, `to_gid_param` —
+- Rails-compat package (`coax/railscompat`): cookie decryption, `cable.yml`, `to_gid_param` —
   only if a Rails app ever needs to sit in front of this.
 - Explicit metrics/tracing hooks, once there's a consumer. `slog` until then.
 - Promote `ws` to its own module or repo if it earns independent versioning.

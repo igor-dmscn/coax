@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"go-cable/ws"
+	"github.com/igor-dmscn/coax-claude-impl/ws"
 )
 
 // ExampleAccept shows an echo server. Accept hijacks the connection, so the

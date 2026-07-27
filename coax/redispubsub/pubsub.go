@@ -1,10 +1,10 @@
-// Package redispubsub implements cable.PubSub on Redis pub/sub, so that
+// Package redispubsub implements coax.PubSub on Redis pub/sub, so that
 // broadcasts reach clients connected to every process sharing one Redis.
 //
 //	ps := redispubsub.New(&redispubsub.Options{Address: "localhost:6379"})
 //	defer ps.Close()
 //
-//	srv := cable.New(&cable.Options{PubSub: ps})
+//	srv := coax.New(&coax.Options{PubSub: ps})
 //
 // It speaks RESP2 directly and has no dependencies. The protocol is five types
 // wide (see resp.go) and pub/sub uses four commands, so a client library would be
@@ -39,10 +39,10 @@ import (
 	"sync"
 	"time"
 
-	"go-cable/cable"
+	"github.com/igor-dmscn/coax-claude-impl/coax"
 )
 
-// PubSub is a Redis-backed cable.PubSub.
+// PubSub is a Redis-backed coax.PubSub.
 //
 // It holds two connections, because a subscribed Redis connection may not be used
 // for anything else: one is in subscribe mode and read by a single goroutine, the
@@ -94,9 +94,9 @@ type broadcasting struct {
 }
 
 // subscriber wraps a handler so that identical handlers are distinct subscribers.
-type subscriber struct{ handle cable.Handler }
+type subscriber struct{ handle coax.Handler }
 
-var _ cable.PubSub = (*PubSub)(nil)
+var _ coax.PubSub = (*PubSub)(nil)
 
 // New returns a PubSub. opts may be nil. It does not connect: the subscribe
 // connection is opened on the first Subscribe and the publish connection on the
@@ -117,7 +117,7 @@ func New(opts *Options) *PubSub {
 // While the connection is down it waits for the reconnection rather than failing,
 // bounded by ctx: the subscription is recorded first, and every recorded
 // subscription is replayed onto the new connection.
-func (p *PubSub) Subscribe(ctx context.Context, name string, h cable.Handler) (func(), error) {
+func (p *PubSub) Subscribe(ctx context.Context, name string, h coax.Handler) (func(), error) {
 	if h == nil {
 		return nil, errors.New("redispubsub: Subscribe with a nil handler")
 	}
@@ -130,7 +130,7 @@ func (p *PubSub) Subscribe(ctx context.Context, name string, h cable.Handler) (f
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return nil, cable.ErrPubSubClosed
+		return nil, coax.ErrPubSubClosed
 	}
 	// Started while holding the lock that Close also takes, so a Subscribe
 	// racing a Close either starts the goroutines before Close waits for them,
@@ -168,7 +168,7 @@ func (p *PubSub) Subscribe(ctx context.Context, name string, h cable.Handler) (f
 		return nil, fmt.Errorf("redispubsub: subscribing to %q: %w", name, ctx.Err())
 	case <-p.ctx.Done():
 		unsubscribe()
-		return nil, cable.ErrPubSubClosed
+		return nil, coax.ErrPubSubClosed
 	}
 }
 
@@ -178,7 +178,7 @@ func (p *PubSub) Broadcast(ctx context.Context, name string, payload []byte) err
 		return err
 	}
 	if p.isClosed() {
-		return cable.ErrPubSubClosed
+		return coax.ErrPubSubClosed
 	}
 
 	p.pubMu.Lock()

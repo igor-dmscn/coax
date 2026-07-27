@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"go-cable/cable"
-	"go-cable/cable/pubsubtest"
-	"go-cable/ws"
+	"github.com/igor-dmscn/coax-claude-impl/coax"
+	"github.com/igor-dmscn/coax-claude-impl/coax/pubsubtest"
+	"github.com/igor-dmscn/coax-claude-impl/ws"
 )
 
 // The tests in this file need a real Redis. They are opt-in, because a test suite
@@ -45,13 +45,13 @@ func realRedis(t *testing.T) *Options {
 // since one Redis is shared by everything pointed at it.
 func prefix(t *testing.T) string {
 	t.Helper()
-	return "go-cable-test:" + strings.ReplaceAll(t.Name(), "/", ":") + ":"
+	return "coax-test:" + strings.ReplaceAll(t.Name(), "/", ":") + ":"
 }
 
 func TestRedisConformance(t *testing.T) {
 	opts := realRedis(t)
 
-	pubsubtest.Run(t, func(t *testing.T) cable.PubSub {
+	pubsubtest.Run(t, func(t *testing.T) coax.PubSub {
 		ps := New(opts)
 		t.Cleanup(func() { ps.Close() })
 		return ps
@@ -131,10 +131,10 @@ func TestRedisEndToEnd(t *testing.T) {
 	ps := New(opts)
 	defer ps.Close()
 
-	srv := cable.New(&cable.Options{PubSub: ps, Logger: testLogger(t)})
+	srv := coax.New(&coax.Options{PubSub: ps, Logger: testLogger(t)})
 	defer srv.Close()
 
-	srv.Register("ChatChannel", func(s *cable.Subscription) cable.Channel {
+	srv.Register("ChatChannel", func(s *coax.Subscription) coax.Channel {
 		return &streamingChannel{sub: s, broadcasting: room}
 	})
 
@@ -145,7 +145,7 @@ func TestRedisEndToEnd(t *testing.T) {
 	defer cancel()
 
 	conn, err := ws.Dial(ctx, "ws"+strings.TrimPrefix(hs.URL, "http"), &ws.DialOptions{
-		Subprotocols: []string{cable.Subprotocol},
+		Subprotocols: []string{coax.Subprotocol},
 	})
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
@@ -194,15 +194,15 @@ func TestRedisEndToEnd(t *testing.T) {
 // has never seen them.
 func TestRedisRemoteDisconnect(t *testing.T) {
 	opts := realRedis(t)
-	ids := cable.Identifiers{"current_user": prefix(t) + "42"}
+	ids := coax.Identifiers{"current_user": prefix(t) + "42"}
 
 	holderPubSub := New(opts)
 	defer holderPubSub.Close()
 
-	holder := cable.New(&cable.Options{
+	holder := coax.New(&coax.Options{
 		PubSub: holderPubSub,
 		Logger: testLogger(t),
-		Authenticate: func(*http.Request) (cable.Identifiers, error) {
+		Authenticate: func(*http.Request) (coax.Identifiers, error) {
 			return ids, nil
 		},
 	})
@@ -215,7 +215,7 @@ func TestRedisRemoteDisconnect(t *testing.T) {
 	defer cancel()
 
 	conn, err := ws.Dial(ctx, "ws"+strings.TrimPrefix(hs.URL, "http"), &ws.DialOptions{
-		Subprotocols: []string{cable.Subprotocol},
+		Subprotocols: []string{coax.Subprotocol},
 	})
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
@@ -231,7 +231,7 @@ func TestRedisRemoteDisconnect(t *testing.T) {
 	otherPubSub := New(opts)
 	defer otherPubSub.Close()
 
-	other := cable.New(&cable.Options{PubSub: otherPubSub, Logger: testLogger(t)})
+	other := coax.New(&coax.Options{PubSub: otherPubSub, Logger: testLogger(t)})
 	defer other.Close()
 
 	if err := other.Disconnect(ctx, ids, false); err != nil {
@@ -260,7 +260,7 @@ func TestRedisRemoteDisconnect(t *testing.T) {
 
 // streamingChannel streams from one fixed broadcasting.
 type streamingChannel struct {
-	sub          *cable.Subscription
+	sub          *coax.Subscription
 	broadcasting string
 }
 
@@ -350,7 +350,7 @@ func TestParseURL(t *testing.T) {
 			wantAddr: "localhost:6379", wantUser: "alice", wantPass: "secret",
 		},
 		{
-			// Rails' cable.yml URLs usually carry a database, which pub/sub
+			// Rails' coax.yml URLs usually carry a database, which pub/sub
 			// ignores: publishing on db 5 reaches subscribers on db 0.
 			name: "database is accepted and ignored", in: "redis://localhost:6379/5",
 			wantAddr: "localhost:6379",
@@ -408,4 +408,4 @@ func TestOptionDefaults(t *testing.T) {
 
 // TestHTTPHandlerCompiles keeps the end-to-end test's imports honest when Redis is
 // absent, so a broken signature is a build failure rather than a skipped test.
-var _ http.Handler = (*cable.Server)(nil)
+var _ http.Handler = (*coax.Server)(nil)

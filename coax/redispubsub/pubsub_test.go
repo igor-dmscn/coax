@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"go-cable/cable"
-	"go-cable/cable/pubsubtest"
+	"github.com/igor-dmscn/coax-claude-impl/coax"
+	"github.com/igor-dmscn/coax-claude-impl/coax/pubsubtest"
 )
 
 // testLogger writes server logs into the test's output, and stops when the test
@@ -61,7 +61,7 @@ func newTestPubSub(t *testing.T) (*PubSub, *fakeRedis) {
 }
 
 // received returns a handler that reports payloads on a channel, and the channel.
-func received() (cable.Handler, chan string) {
+func received() (coax.Handler, chan string) {
 	payloads := make(chan string, 16)
 	return func(payload []byte) {
 		select {
@@ -95,7 +95,7 @@ func expectNothing(t *testing.T, payloads chan string) {
 }
 
 // subscribe subscribes with a short deadline, so a test fails rather than hangs.
-func subscribe(t *testing.T, ps *PubSub, name string, h cable.Handler) func() {
+func subscribe(t *testing.T, ps *PubSub, name string, h coax.Handler) func() {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -122,7 +122,7 @@ func broadcast(t *testing.T, ps *PubSub, name, payload string) {
 // TestConformance runs the shared PubSub suite, which is the same one the
 // in-memory adapter passes.
 func TestConformance(t *testing.T) {
-	pubsubtest.Run(t, func(t *testing.T) cable.PubSub {
+	pubsubtest.Run(t, func(t *testing.T) coax.PubSub {
 		ps, _ := newTestPubSub(t)
 		return ps
 	})
@@ -435,11 +435,11 @@ func TestCloseStopsEverything(t *testing.T) {
 	waitFor(t, "goroutines to exit", func() bool { return runtime.NumGoroutine() <= before-2 })
 
 	ctx := context.Background()
-	if err := ps.Broadcast(ctx, "room_1", []byte(`1`)); !errors.Is(err, cable.ErrPubSubClosed) {
-		t.Errorf("Broadcast() after Close = %v, want %v", err, cable.ErrPubSubClosed)
+	if err := ps.Broadcast(ctx, "room_1", []byte(`1`)); !errors.Is(err, coax.ErrPubSubClosed) {
+		t.Errorf("Broadcast() after Close = %v, want %v", err, coax.ErrPubSubClosed)
 	}
-	if _, err := ps.Subscribe(ctx, "room_1", h); !errors.Is(err, cable.ErrPubSubClosed) {
-		t.Errorf("Subscribe() after Close = %v, want %v", err, cable.ErrPubSubClosed)
+	if _, err := ps.Subscribe(ctx, "room_1", h); !errors.Is(err, coax.ErrPubSubClosed) {
+		t.Errorf("Subscribe() after Close = %v, want %v", err, coax.ErrPubSubClosed)
 	}
 }
 
@@ -463,8 +463,8 @@ func TestCloseReleasesAPendingSubscribe(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, cable.ErrPubSubClosed) {
-			t.Errorf("Subscribe() error = %v, want %v", err, cable.ErrPubSubClosed)
+		if !errors.Is(err, coax.ErrPubSubClosed) {
+			t.Errorf("Subscribe() error = %v, want %v", err, coax.ErrPubSubClosed)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a pending Subscribe was not released by Close")
